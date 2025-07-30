@@ -47,4 +47,10 @@ We present a streamlined process to produce reduced-order model (ROM) simulation
     python -m package #running the code
    ```
 8. **Follow command line guidance to complete simulation**
++ Choose to automatically clip the SeqSeg result surface to define outlets.
++ Remesh model and create boundary condition template for users to edit
++ Generate inflow file via GUI
++ Create Parameter config file for user to edit
++ Run 1D simulation
++ Run 0D simulation
    
