@@ -6,7 +6,8 @@
 *.vtp
 *.flow
 *.in
+*.dat
 res_from_seqseg/
 sv_project/
-
+tests_from_before/
 test/
