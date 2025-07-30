@@ -9,6 +9,27 @@ from scipy.spatial.distance import cdist
 import numpy as np
 from scipy.sparse.csgraph import minimum_spanning_tree
 import math 
+        
+def clip_segseq_TF():
+    '''
+    this function asks the user if they want to clip the seqseg model
+    and if so, it runs the post_process_seqseg.py script to clip the seqseg model
+    '''
+    while True:
+        print( "\n Do you want to automatically clip the seqseg model? \n")
+        print('note: depending on your model complexity (are there any branch outlet next to other vessels),this method may not be robust.')
+        print('Recommend using SimVascular to clip the caps open tailoring to your needs.')
+        answer = input(
+            "Do you want to automatically clip the seqseg model? (yes/no): "
+        )
+        if answer.lower() == "yes":
+            print("Clipping the seqseg model...")
+            return True
+        elif answer.lower() == "no":
+            print("Skipping clipping of the seqseg model.")
+            return False
+        else:
+            print("Invalid input. Please enter 'yes' or 'no'.")
 
 
 
@@ -268,7 +289,12 @@ def bryan_clip_surface(surf1, surf2):
 if __name__ == "__main__":
 
     from collections import defaultdict
-
+    import sys
+    ans = clip_segseq_TF()
+    if not ans or not os.path.exists(seqseg_cl):
+        print('You chose not to clip the seqseg model, or the rough seqseg centerline file does not exist.')
+        print("please manually clip your surface, and save it according to your <clipped_seqseg_results> from init file  .")
+        sys.exit(0)
     # 1) Read your centerline VTP
     clpd = pv.read(seqseg_cl)
     surf_pd = pv.read(segseqed_model)

@@ -39,12 +39,13 @@ you may use SimVascular to clip the caps open tailering to your needs.
 If so, comment this out
 '''
 
-# subprocess.run(
-#     [local_py_bin, 'post_process_seqseg.py'],
-#     cwd=os.path.dirname(__file__),  
-#     text=True,
-#     check=True
-# )
+subprocess.run(
+    [local_py_bin, 'post_process_seqseg.py'],
+    cwd=os.path.dirname(__file__),  
+    text=True,
+    check=True
+)
+
 '''
 notes: 
 outputs the clipped seqseg model to master_folder's <clipped_seqseg_results> path, and clipping boxes
@@ -53,41 +54,41 @@ outputs the clipped seqseg model to master_folder's <clipped_seqseg_results> pat
 # ============================ pre-process ==============================
 
 
-# if Windows:
-#     # copy your current environment, but prepend project_root to PYTHONPATH
-#     script = os.path.join(os.path.dirname(__file__), 'sv_preprocess.py') 
-#     #pdb.set_trace()
-#     # run bat via shell, but with PYTHONPATH set
-#     subprocess.run(
-#         f'"{sv_bat}" --python -- "{script}"',
-#         cwd=sv_dir,
-#         shell=True,
-#         check=True,
-#         text=True,
-#         env=env,
-#     )
+if Windows:
+    # copy your current environment, but prepend project_root to PYTHONPATH
+    script = os.path.join(os.path.dirname(__file__), 'sv_preprocess.py') 
+    #pdb.set_trace()
+    # run bat via shell, but with PYTHONPATH set
+    subprocess.run(
+        f'"{sv_bat}" --python -- "{script}"',
+        cwd=sv_dir,
+        shell=True,
+        check=True,
+        text=True,
+        env=env,
+    )
 
-# else:
-#   preprocess = subprocess.run(
-#       [ sv_py_bin, 
-#         "--python",  # split flags out
-#         "--",
-#         "sv_preprocess.py"
-#       ],
-#       cwd=os.path.dirname(__file__),
-#       text=True,
-#       check=True
-#   )
+else:
+  preprocess = subprocess.run(
+      [ sv_py_bin, 
+        "--python",  # split flags out
+        "--",
+        "sv_preprocess.py"
+      ],
+      cwd=os.path.dirname(__file__),
+      text=True,
+      check=True
+  )
 
 # =======================================================================
 # =======================================================================
 
-# get_inflow = subprocess.run(
-#     [local_py_bin, 'gen_inflow.py'],
-#     cwd=os.path.dirname(__file__),
-#     text=True,
-#     check=True
-# )   
+get_inflow = subprocess.run(
+    [local_py_bin, 'gen_inflow.py'],
+    cwd=os.path.dirname(__file__),
+    text=True,
+    check=True
+)   
 # =======================================================================
 # =======================================================================
 
@@ -139,11 +140,6 @@ run_0D = subprocess.run(
     text=True,
     check=True
 )
-
-
-
-
-
 
 
 

@@ -174,7 +174,7 @@ def generate_inflow_file():
 
 if __name__ == '__main__':
     print('\n')
-    print("Now, you are creating an inflow file from the GUI editor.")
+    print("Now, you are going to create an inflow file from the GUI editor.")
     print('Do you have an existing inflow file you wish to use? (yes/no)")')
           
     inflow_file_exists = input().strip().lower()

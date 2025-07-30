@@ -15,6 +15,7 @@ import csv
 import subprocess
 import configparser
 
+
 def write_text(filename: str, content: str, mode: str = 'w') -> None:
     """
     Write text content to a file.
@@ -88,26 +89,34 @@ def create_rcr_bc_template(cap_folder_path, save_to):
         write_text(save_to, '<R_distal>\n', 'a')
         write_text(save_to, '0.0 0.0\n', 'a')
         write_text(save_to, '1.0 0.0\n', 'a')
-        
+
+
 
 def get_inlet_cap_name(caps_folder):
     """
-    Ask the user for a cap name (without “.vtp”) and
-    only return once we have a file that actually exists.
+    Ask the user for a cap name (without “.vtp”), verify it exists,
+    and atomically set it as inlet.vtp (overwriting any previous one).
+    Works on both Windows and Linux/macOS.
     """
+    prompt = "Please enter the name of the cap to be used as inlet (e.g., cap_1): "
     while True:
-        name = raw_input("Please enter the name of the cap to be used as inlet (e.g., cap_1): ") \
-               if sys.version_info < (3, 0) else input(
-                   "Please enter the name of the cap to be used as inlet (e.g., cap_1): "
-               )
-        path = os.path.join(caps_folder, name + '.vtp')
-        if os.path.exists(path):
-            os.rename(path, os.path.join(caps_folder, 'inlet.vtp'))
-            print("Inlet cap set as '{0}.vtp' and renamed as 'inlet.vtp'\n".format(name))
-            return
-        else:
-            # using .format() instead of f-string
+        name = input(prompt)
+        src = os.path.join(caps_folder, name + '.vtp')
+        dst = os.path.join(caps_folder, 'inlet.vtp')
+
+        if not os.path.exists(src):
             print("Cap file '{0}.vtp' does not exist. Please check the name and try again.\n".format(name))
+            continue
+
+        try:
+            # os.replace will overwrite dst if it exists (atomic on both Windows and Linux)
+            os.replace(src, dst)
+        except Exception as e:
+            print("ERROR: could not rename '{0}.vtp' to 'inlet.vtp': {1}".format(name, e))
+            sys.exit(1)
+
+        print("Inlet cap set as '{0}.vtp' and renamed to 'inlet.vtp'\n".format(name))
+        return
     # rename path to inlet.vtp
     # later centerlines_outlets.dat will automatically be changed (remove the cap name of the inlet)
 
@@ -280,7 +289,7 @@ def write_template_config(path,order):
 
     # Section for your 1D sim parameters
     cfg['Simulation'] = {
-        'number_of_cycles':            '15',
+        'number_of_cycles':            '10',
         'model_order':                 str(order),  # 1 for 1D, 0 for 0D
         'element_size':                '0.01',
         'time_step_size':              'auto',     # 'auto' to compute from inflow file
@@ -305,11 +314,13 @@ def write_template_config(path,order):
         f.write("# This is your simulation config. Edit values as needed.\n")
         f.write("# time_step_size and num_time_steps_per_cycles are automatically computed from your inflow_1D.flow file.\n")
         f.write("# Recommend leaving it as auto.\n")
+        f.write("\n")
+        f.write("# For Physics paramters, use default values or consult https://doi.org/10.1152/ajpheart.1999.276.1.H257 \n")
         cfg.write(f)
     print("Template config written to {}".format(path))
 
 
-def load_config(path, inflow_file_path):
+def load_config(path, inflow_file_path,P = None):
     """
     Reads the INI file at `path` and returns a populated Parameters() object.
     Uses `inflow_file_path` when 'auto' is selected.
@@ -322,8 +333,9 @@ def load_config(path, inflow_file_path):
 
     sim  = cfg['Simulation']
     phys = cfg['Physics']
-
-    P = Parameters()
+    if P is None:
+        P = Parameters()  # Create a new Parameters object if not provided
+    
     P.model_order    = sim.getint('model_order')
     P.element_size   = sim.getfloat('element_size')
     P.save_data_freq = sim.getint('save_data_freq')

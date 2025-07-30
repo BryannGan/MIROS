@@ -8,31 +8,9 @@ from helper_func import *
 
 
 write_template_config(os.path.join(master_folder, 'params_1D.dat'), 1)
-Params1D = load_config(os.path.join(master_folder, 'params_1D.dat'),inflow_file_path)
-pdb.set_trace()
-# set up 1D parameters
-# number_of_cycles = 15
-
-# Params1D = Parameters()
-# Params1D.model_order = 1
-# Params1D.element_size = 0.01
-# Params1D.time_step = get_timestep_size(inflow_file_path)
-# Params1D.num_time_steps = get_number_of_timesteps(number_of_cycles, inflow_file_path)
-# Params1D.save_data_freq = 1
-
-
-# # physical parameters
-# Params1D.density = 1.06
-# Params1D.viscosity = 0.04
-# Params1D.olufsen_material_k1 = 0.0
-# Params1D.olufsen_material_k2 = -22.5267
-# Params1D.olufsen_material_k3 = 1.0e7
-# Params1D.olufsen_material_exponent = 1.0
-# Params1D.olufsen_material_pressure = 0.0
-# Params1D.linear_material_ehr = 1e7
-# Params1D.linear_material_pressure = 0.0
 
 # output directories
+Params1D = Parameters()
 Params1D.output_directory = master_folder
 Params1D.boundary_surfaces_dir = caps_folder
 Params1D.inlet_face_input_file = 'inlet.vtp'
@@ -40,7 +18,7 @@ Params1D.centerlines_output_file = os.path.join(master_folder,'extracted_centerl
 Params1D.surface_model = os.path.join(master_folder, 'remeshed_model.vtp')
 Params1D.inflow_input_file = inflow_file_path
 Params1D.solver_output_file = os.path.join(master_folder,'1D_solver_input.in')
-Params1D.model_name = 'your_model_name' ## change this to your model name
+Params1D.model_name = surf_name ## change this to your model name
 Params1D.outflow_bc_type = 'rcr'
 Params1D.uniform_bc = False
 Params1D.seg_size_adaptive = True
@@ -62,7 +40,7 @@ else:
 while True:
     answer = input(
         "Before running the 1D simulation, please check your RCR boundary "
-        "condition file and inflow file, and make sure they are correct.\n"
+        "condition file, inflow file, and parameter file, and make sure they are correct.\n"
         "Do you want to continue? (yes/no): "
     )
     if answer.lower() == "yes":
@@ -70,6 +48,7 @@ while True:
             os.makedirs(res_folder_1D)
             print("1D results folder created and can be found at: ", res_folder_1D)
             print('\n'  )
+            Params1D = load_config(os.path.join(master_folder, 'params_1D.dat'),inflow_file_path,Params1D)
         break
     elif answer.lower() == "no":
         print("Then go fix it.\n")
@@ -85,7 +64,7 @@ msh.generate(Params1D, Cl)
 # run 1D simulation
 try:
     print('\n')
-    print('Running 1D simulation.')
+    print('Running 1D simulation...')
     print('number of time steps: ', Params1D.num_time_steps)
     print('time step size: ', Params1D.time_step)
     print('solver output file: ', Params1D.solver_output_file)

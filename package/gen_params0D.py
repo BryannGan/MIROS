@@ -8,10 +8,9 @@ from helper_func import *
 # set up 1D parameters
 
 write_template_config(os.path.join(master_folder, 'params_0D.dat'), 0)
-Params1D = load_config(os.path.join(master_folder, 'params_0D.dat'),inflow_file_path)
-
 
 # output directories
+Params0D = Parameters()
 Params0D.output_directory = master_folder
 Params0D.boundary_surfaces_dir = caps_folder
 Params0D.inlet_face_input_file = 'inlet.vtp'
@@ -40,8 +39,8 @@ else:
 
 while True:
     answer = input(
-        "Before running the 0D simulation, please check your RCR boundary "
-        "condition file and inflow file, and make sure they are correct.\n"
+         "Before running the 1D simulation, please check your RCR boundary "
+        "condition file, inflow file, and parameter file, and make sure they are correct.\n"
         "Do you want to continue? (yes/no): "
     )
     if answer.lower() == "yes":
@@ -49,6 +48,7 @@ while True:
             os.makedirs(res_folder_0D)
             print("0D results folder created and can be found at: ", res_folder_0D)
             print('\n'  )
+            Params0D = load_config(os.path.join(master_folder, 'params_1D.dat'),inflow_file_path,Params0D)
         break
     elif answer.lower() == "no":
         print("Then go fix it.\n")
