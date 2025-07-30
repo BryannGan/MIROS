@@ -1,6 +1,9 @@
 # Byte‑compiled / caches
 **/__pycache__/
 *.py[cod]
+!test_windows/*.vtp
+!test_Linux_Mac/*.vtp
+
 
 # VTK outputs and data
 *.vtp
