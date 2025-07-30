@@ -1,0 +1,12 @@
+# Byte‑compiled / caches
+**/__pycache__/
+*.py[cod]
+
+# VTK outputs and data
+*.vtp
+*.flow
+*.in
+res_from_seqseg/
+sv_project/
+test_windows/
+test/
