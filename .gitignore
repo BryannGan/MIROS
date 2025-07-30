@@ -8,5 +8,5 @@
 *.in
 res_from_seqseg/
 sv_project/
-#test_windows/
+
 test/
