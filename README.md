@@ -22,7 +22,7 @@ We present a streamlined process to produce reduced-order model (ROM) simulation
    conda activate MIROS
    ```
    ```bash
-   # install seqseg (toollkit from Medical Image to Surface Model)
+   # install seqseg (toollkit to compute simulation ready surface model from medical image)
    pip install seqseg
    ```
    ```bash
