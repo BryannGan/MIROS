@@ -1,9 +1,14 @@
+import sys
 from sv import *
 from sv_rom_simulation import *
 from sv_auto_lv_modeling.modeling.src import meshing as svmeshtool
 import os
 from __init__ import *
-from helper_func import *
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
+from package import *
+from package.helper_func import *
+
 
 # set up 1D parameters
 
@@ -39,7 +44,7 @@ else:
 
 while True:
     answer = input(
-         "Before running the 1D simulation, please check your RCR boundary "
+         "Before running the 0D simulation, please check your RCR boundary "
         "condition file, inflow file, and parameter file, and make sure they are correct.\n"
         "Do you want to continue? (yes/no): "
     )

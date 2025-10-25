@@ -17,14 +17,21 @@ import csv
 import warnings
 import subprocess
 
-# from . import *
-# from .helper_func import *
+# ========================================================================
+# ============================ intialize  ================================
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 from package import *
-from helper_func import *
+from package.helper_func import *
+# ========================================================================
+# ============================ preprocess  ================================
+
+
 '''
 to use this code
 /usr/local/sv/simvascular/2023-03-27/simvascular --python -- /home/bg2881/Documents/MIROS/MIROS/package/main1D.py
 '''
+
 
 
 ### here! model(clipped_seqseg_results) needs to have boundary clipped open

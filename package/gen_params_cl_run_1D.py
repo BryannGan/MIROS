@@ -2,9 +2,10 @@ from sv import *
 from sv_rom_simulation import *
 from sv_auto_lv_modeling.modeling.src import meshing as svmeshtool
 import os
-from package import *
-from helper_func import *
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
+from package import *
+from package.helper_func import *
 
 
 write_template_config(os.path.join(master_folder, 'params_1D.dat'), 1)
