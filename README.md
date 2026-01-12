@@ -285,7 +285,8 @@ You will be prompted to select a mode when running MIROS.
 The complete workflow consists of the following steps:
 
 #### Step 1: Preprocessing (`sv_preprocess.py`)
-- Loads your clipped SeqSeg surface mesh
+- Generates the surface mesh from a medical image using Seqseg - https://github.com/numisveinsson/SeqSeg
+- Loads your clipped SeqSeg surface mesh - outlets open
 - Computes adaptive edge size (if set to 'auto')
 - Remeshes the surface for simulation quality
 - Generates volume mesh using TetGen
@@ -309,6 +310,8 @@ cap_outlet2
 Rp Rd
 C
 ```
+**note:** An automatic boundary condition tuning feature is coming. Users may define a flow split ratio among all outlets and an 'approximate' pressure value at one outlet. The program may optimize boundary conditions to fit the pressure value and flow split ratio.
+
 
 #### Step 3: Inflow Waveform (`gen_inflow.py`)
 - Interactive GUI to design cardiac inflow waveform
