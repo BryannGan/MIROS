@@ -170,7 +170,7 @@ segseqed_model = '/path/to/seqseg_surface_mesh.vtp'
 seqseg_cl = '/path/to/seqseg_centerline.vtp'
 ```
 
-> **Warning**: Automatic clipping is experimental and may not work for all geometries. For best results, use SimVascular GUI to manually clip your model.
+> **Warning**: Automatic clipping is experimental and may not work for all geometries. For best results, use SimVascular GUI or Paraview to manually clip your model.
 
 ### Mesh Settings
 
