@@ -48,7 +48,7 @@ Before installing MIROS, ensure you have the following software installed:
 
 ---
 
-## Installation
+## Installation (~20 minutes)
 
 ### 1. Clone the Repository
 
