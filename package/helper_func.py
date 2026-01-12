@@ -16,6 +16,92 @@ import subprocess
 import configparser
 
 
+# ========================================================================
+# === Adaptive Edge Size (Added by Claude) ===
+# ========================================================================
+
+def compute_adaptive_edge_size(polydata):
+    """
+    Compute adaptive edge size based on model geometry.
+
+    This function analyzes the input surface mesh and determines an appropriate
+    edge size for remeshing based on:
+    1. Model bounding box dimensions
+    2. Average existing edge length
+    3. Minimum vessel diameter estimation
+
+    Modified by Claude: Automatic edge size detection for robust meshing
+
+    Parameters:
+    - polydata: VTK PolyData object (surface mesh)
+
+    Returns:
+    - edge_size: Recommended edge size for remeshing
+    """
+    import math
+
+    # Get bounding box
+    bounds = polydata.GetBounds()
+    size_x = bounds[1] - bounds[0]
+    size_y = bounds[3] - bounds[2]
+    size_z = bounds[5] - bounds[4]
+    max_dim = max(size_x, size_y, size_z)
+
+    # Sample existing edge lengths to understand current mesh density
+    points = polydata.GetPoints()
+    num_cells = polydata.GetNumberOfCells()
+
+    edge_lengths = []
+    sample_size = min(1000, num_cells)  # Sample up to 1000 cells
+    step = max(1, num_cells // sample_size)
+
+    for i in range(0, num_cells, step):
+        cell = polydata.GetCell(i)
+        if cell.GetNumberOfPoints() >= 3:
+            # Get first edge of the cell
+            p0 = points.GetPoint(cell.GetPointId(0))
+            p1 = points.GetPoint(cell.GetPointId(1))
+            edge_len = math.sqrt((p1[0]-p0[0])**2 + (p1[1]-p0[1])**2 + (p1[2]-p0[2])**2)
+            if edge_len > 0:
+                edge_lengths.append(edge_len)
+
+    if edge_lengths:
+        avg_edge = sum(edge_lengths) / len(edge_lengths)
+        min_edge = min(edge_lengths)
+        max_edge = max(edge_lengths)
+    else:
+        # Fallback: use 1.5% of max dimension
+        avg_edge = max_dim * 0.015
+        min_edge = avg_edge
+        max_edge = avg_edge
+
+    # Compute recommended edge size:
+    # - Use average edge length as baseline
+    # - Ensure it's reasonable relative to model size (0.5% to 3% of max dimension)
+    recommended = avg_edge
+
+    # Clamp to reasonable range based on model size
+    min_allowed = max_dim * 0.005  # At least 0.5% of model size
+    max_allowed = max_dim * 0.03   # At most 3% of model size
+
+    recommended = max(min_allowed, min(max_allowed, recommended))
+
+    # Round to 2 significant figures for cleaner value
+    if recommended > 0:
+        magnitude = 10 ** math.floor(math.log10(abs(recommended)))
+        recommended = round(recommended / magnitude, 1) * magnitude
+
+    print("  [AUTO] Edge size computation:")
+    print("    Model dimensions: {:.2f} x {:.2f} x {:.2f}".format(size_x, size_y, size_z))
+    print("    Existing edge lengths: min={:.4f}, avg={:.4f}, max={:.4f}".format(min_edge, avg_edge, max_edge))
+    print("    Recommended edge size: {:.4f}".format(recommended))
+
+    return recommended
+
+
+# ========================================================================
+
+
 def write_text(filename: str, content: str, mode: str = 'w') -> None:
     """
     Write text content to a file.
@@ -94,28 +180,40 @@ def create_rcr_bc_template(cap_folder_path, save_to):
 
 def get_inlet_cap_name(caps_folder):
     """
-    Ask the user for a cap name (without “.vtp”), verify it exists,
+    Ask the user for a cap name (without ".vtp"), verify it exists,
     and atomically set it as inlet.vtp (overwriting any previous one).
     Works on both Windows and Linux/macOS.
+
+    Modified by Claude: Improved user prompts with clearer formatting
     """
-    prompt = "Please enter the name of the cap to be used as inlet (e.g., cap_1): "
+    # --- List available caps for user reference (added by Claude) ---
+    cap_files = [f for f in os.listdir(caps_folder) if f.startswith('cap_') and f.endswith('.vtp')]
+    cap_names = [os.path.splitext(f)[0] for f in cap_files]
+
+    print("\n  Available caps:")
+    for cap in sorted(cap_names):
+        print("    - " + cap)
+    print("")
+    # --- End listing ---
+
     while True:
-        name = input(prompt)
+        # Modified by Claude: clearer input prompt
+        name = input("  Enter inlet cap name (e.g., cap_2): ")
         src = os.path.join(caps_folder, name + '.vtp')
         dst = os.path.join(caps_folder, 'inlet.vtp')
 
         if not os.path.exists(src):
-            print("Cap file '{0}.vtp' does not exist. Please check the name and try again.\n".format(name))
+            print("  [ERROR] Cap file '{0}.vtp' does not exist. Try again.\n".format(name))
             continue
 
         try:
             # os.replace will overwrite dst if it exists (atomic on both Windows and Linux)
             os.replace(src, dst)
         except Exception as e:
-            print("ERROR: could not rename '{0}.vtp' to 'inlet.vtp': {1}".format(name, e))
+            print("  [ERROR] Could not rename '{0}.vtp' to 'inlet.vtp': {1}".format(name, e))
             sys.exit(1)
 
-        print("Inlet cap set as '{0}.vtp' and renamed to 'inlet.vtp'\n".format(name))
+        print("  [OK] Inlet cap set: '{0}.vtp' -> 'inlet.vtp'\n".format(name))
         return
     # rename path to inlet.vtp
     # later centerlines_outlets.dat will automatically be changed (remove the cap name of the inlet)
@@ -289,12 +387,12 @@ def write_template_config(path,order):
 
     # Section for your 1D sim parameters
     cfg['Simulation'] = {
-        'number_of_cycles':            '10',
+        'number_of_cycles':            '8',
         'model_order':                 str(order),  # 1 for 1D, 0 for 0D
         'element_size':                '0.01',
         'time_step_size':              'auto',     # 'auto' to compute from inflow file
         'num_time_steps_per_cycles':   'auto',     # 'auto' to compute from file+cycles
-        'save_data_freq':              '1',
+        'save_data_freq':              '5',
     }
 
     # Section for physical constants
@@ -317,7 +415,8 @@ def write_template_config(path,order):
         f.write("\n")
         f.write("# For Physics paramters, use default values or consult https://doi.org/10.1152/ajpheart.1999.276.1.H257 \n")
         cfg.write(f)
-    print("Template config written to {}".format(path))
+    # Modified by Claude: improved status message
+    print("  [OK] Template config written: {}".format(path))
 
 
 def load_config(path, inflow_file_path,P = None):

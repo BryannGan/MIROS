@@ -2,11 +2,28 @@ from sv import *
 from sv_rom_simulation import *
 from sv_auto_lv_modeling.modeling.src import meshing as svmeshtool
 import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 from package import *
-from helper_func import *
+from package.helper_func import *
 
+# Modified by Claude: Added helper functions for formatted output
+def print_section_header(title):
+    """Print a formatted section header for better readability."""
+    print("\n" + "=" * 70)
+    print("  [STEP] " + title)
+    print("=" * 70)
 
+def print_status(message):
+    """Print a status message with visual indicator."""
+    print("  ✓ " + message)
 
+def print_info(message):
+    """Print an info message."""
+    print("  → " + message)
+# --- End helper functions ---
+
+print_section_header("1D SIMULATION: Parameter Setup")
 write_template_config(os.path.join(master_folder, 'params_1D.dat'), 1)
 
 # output directories
@@ -29,69 +46,97 @@ Params1D.outflow_bc_file = os.path.join(master_folder, 'rcrt.dat')
 Cl = Centerlines()
 if not os.path.exists(Params1D.centerlines_output_file):
     try:
+        print_info("Extracting centerlines...")
         Cl.extract_center_lines(Params1D)
+        print_status("Centerlines extracted successfully")
     except Exception as e:
-        print("Error occurred while extracting centerlines: ", e)
-        print('option 1: smooth the model; smooth remeshed_model.vtp and save it as the same name') # needs work
-        print('option 2: create finer mesh; use a smaller element size above') # needs work
+        # Modified by Claude: improved error messages
+        print("\n  [ERROR] Error extracting centerlines: " + str(e))
+        print("  Possible solutions:")
+        print("    1. Smooth the model: smooth remeshed_model.vtp and save with same name")
+        print("    2. Create finer mesh: use a smaller element size")
 else:
     Cl.read(Params1D, Params1D.centerlines_output_file)
+    print_status("Centerlines loaded from: " + Params1D.centerlines_output_file)
 
+# Modified by Claude: Improved user input section with clear formatting
+print("\n" + "-" * 70)
+print("  >>> USER INPUT REQUIRED <<<")
+print("-" * 70)
+print("  Before running 1D simulation, please verify the following files:")
+print("    1. RCR boundary condition file: " + os.path.join(master_folder, 'rcrt.dat'))
+print("    2. Inflow file: " + inflow_file_path)
+print("    3. Parameter file: " + os.path.join(master_folder, 'params_1D.dat'))
+print("-" * 70)
+
+# Modified by Claude: Added 'skip' option to bypass 1D simulation
+run_1d_sim = True  # Flag to track if we should run the simulation
 while True:
-    answer = input(
-        "Before running the 1D simulation, please check your RCR boundary "
-        "condition file, inflow file, and parameter file, and make sure they are correct.\n"
-        "Do you want to continue? (yes/no): "
-    )
+    answer = input("  Ready to run 1D simulation? (yes/no/skip): ")
     if answer.lower() == "yes":
         if not os.path.exists(res_folder_1D):
             os.makedirs(res_folder_1D)
-            print("1D results folder created and can be found at: ", res_folder_1D)
-            print('\n'  )
-            Params1D = load_config(os.path.join(master_folder, 'params_1D.dat'),inflow_file_path,Params1D)
+        print_status("1D results folder: " + res_folder_1D)
+        Params1D = load_config(os.path.join(master_folder, 'params_1D.dat'),inflow_file_path,Params1D)
         break
     elif answer.lower() == "no":
-        print("Then go fix it.\n")
+        print("  [INFO] Please fix the files, then type 'yes' when ready.\n")
+    elif answer.lower() == "skip":
+        print_info("Skipping 1D simulation, continuing to next step...")
+        run_1d_sim = False
+        break
     else:
-        print("Invalid input. Please enter 'yes' or 'no'.")
+        print("  [ERROR] Invalid input. Please enter 'yes', 'no', or 'skip'.")
 
-msh = mesh.Mesh()
-msh.generate(Params1D, Cl)
-
-
-
-
-# run 1D simulation
-try:
-    print('\n')
-    print('Running 1D simulation...')
-    print('number of time steps: ', Params1D.num_time_steps)
-    print('time step size: ', Params1D.time_step)
-    print('solver output file: ', Params1D.solver_output_file)
-    print('results folder: ', res_folder_1D)
-    run_1d_simulation(OneDSolv, Params1D.solver_output_file, res_folder_1D)
-except Exception as e:
-    print("An error occurred while running the 1D simulation: ", e)
-    print("Please check the solver output file for more details.\n")
-
-
-# make sure simulation run successfully
-num_of_file_in_res_folder_1D = len([f for f in os.listdir(res_folder_1D)])
-#pdb.set_trace()
-while num_of_file_in_res_folder_1D <= 3:
-    print('\n')
-    print('A common error for 1D ROM, which can occur when there is a large difference in the inlet and outlet areas of a segment, is outlet areas going negative.')
-    print('Splitting the vessels into smaller segments until we avoid this error.')
-    Params1D.seg_min_num = Params1D.seg_min_num + 1
-    print('New minimum number of segments: ', Params1D.seg_min_num)
+# Modified by Claude: Only run simulation if not skipped
+if run_1d_sim:
+    msh = mesh.Mesh()
     msh.generate(Params1D, Cl)
+
+    # Modified by Claude: Improved simulation run output
+    print_section_header("1D SIMULATION: Running Solver")
+
+    # run 1D simulation
     try:
-        print('Running 1D simulation')
+        print_info("Simulation parameters:")
+        print("    - Time steps: " + str(Params1D.num_time_steps))
+        print("    - Step size: " + str(Params1D.time_step))
+        print("    - Solver input: " + Params1D.solver_output_file)
+        print("    - Results folder: " + res_folder_1D)
+        print("")
+        print_info("Running 1D solver... (this may take a moment)")
         run_1d_simulation(OneDSolv, Params1D.solver_output_file, res_folder_1D)
-        
     except Exception as e:
-        print('Continuing to split the vessels until we avoid this error.')
+        print("\n  [ERROR] 1D simulation failed: " + str(e))
+        print("  Check the solver output file for details.\n")
+
+
+    # make sure simulation run successfully
     num_of_file_in_res_folder_1D = len([f for f in os.listdir(res_folder_1D)])
+    #pdb.set_trace()
+    while num_of_file_in_res_folder_1D <= 3:
+        # Modified by Claude: improved error recovery messages
+        print("\n" + "-" * 70)
+        print("  [WARNING] Simulation may have failed (insufficient output files)")
+        print("-" * 70)
+        print("  Common cause: Large difference in inlet/outlet areas causing")
+        print("  negative outlet areas. Auto-adjusting mesh segmentation...")
+        Params1D.seg_min_num = Params1D.seg_min_num + 1
+        print_info("New minimum segments: " + str(Params1D.seg_min_num))
+        msh.generate(Params1D, Cl)
+        try:
+            print_info("Re-running 1D simulation...")
+            run_1d_simulation(OneDSolv, Params1D.solver_output_file, res_folder_1D)
+
+        except Exception as e:
+            print("  [INFO] Continuing to adjust mesh segmentation...")
+        num_of_file_in_res_folder_1D = len([f for f in os.listdir(res_folder_1D)])
+
+    print_status("1D simulation completed successfully!")
+    print_info("Results saved to: " + res_folder_1D)
+else:
+    # Modified by Claude: Message when simulation is skipped
+    print_info("1D simulation was skipped by user")
 
 
 ####### 0D ########

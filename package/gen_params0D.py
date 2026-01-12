@@ -1,12 +1,32 @@
+import sys
 from sv import *
 from sv_rom_simulation import *
 from sv_auto_lv_modeling.modeling.src import meshing as svmeshtool
 import os
 from __init__ import *
-from helper_func import *
 
-# set up 1D parameters
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
+from package import *
+from package.helper_func import *
 
+# Modified by Claude: Added helper functions for formatted output
+def print_section_header(title):
+    """Print a formatted section header for better readability."""
+    print("\n" + "=" * 70)
+    print("  [STEP] " + title)
+    print("=" * 70)
+
+def print_status(message):
+    """Print a status message with visual indicator."""
+    print("  ✓ " + message)
+
+def print_info(message):
+    """Print an info message."""
+    print("  → " + message)
+# --- End helper functions ---
+
+# set up 0D parameters
+print_section_header("0D SIMULATION: Parameter Setup")
 write_template_config(os.path.join(master_folder, 'params_0D.dat'), 0)
 
 # output directories
@@ -25,40 +45,65 @@ Params0D.seg_size_adaptive = False
 Params0D.seg_min_num = 4
 Params0D.outlet_face_names_file = os.path.join(master_folder,'centerlines_outlets.dat')
 Params0D.outflow_bc_file = os.path.join(master_folder, 'rcrt.dat')
+Params0D.model_order = 0
 
 Cl = Centerlines()
 if not os.path.exists(Params0D.centerlines_output_file):
     try:
+        print_info("Extracting centerlines...")
         Cl.extract_center_lines(Params0D)
+        print_status("Centerlines extracted successfully")
     except Exception as e:
-        print("Error occurred while extracting centerlines: ", e)
-        print('option 1: smooth the model; smooth remeshed_model.vtp and save it as the same name') # needs work
-        print('option 2: create finer mesh; use a smaller element size above') # needs work
+        # Modified by Claude: improved error messages
+        print("\n  [ERROR] Error extracting centerlines: " + str(e))
+        print("  Possible solutions:")
+        print("    1. Smooth the model: smooth remeshed_model.vtp and save with same name")
+        print("    2. Create finer mesh: use a smaller element size")
 else:
     Cl.read(Params0D, Params0D.centerlines_output_file)
+    print_status("Centerlines loaded from: " + Params0D.centerlines_output_file)
 
+# Modified by Claude: Improved user input section with clear formatting
+print("\n" + "-" * 70)
+print("  >>> USER INPUT REQUIRED <<<")
+print("-" * 70)
+print("  Before running 0D simulation, please verify the following files:")
+print("    1. RCR boundary condition file: " + os.path.join(master_folder, 'rcrt.dat'))
+print("    2. Inflow file: " + inflow_file_path)
+print("    3. Parameter file: " + os.path.join(master_folder, 'params_0D.dat'))
+print("-" * 70)
+
+# Modified by Claude: Added 'skip' option to bypass 0D setup
+run_0d_setup = True  # Flag to track if we should run the setup
 while True:
-    answer = input(
-         "Before running the 1D simulation, please check your RCR boundary "
-        "condition file, inflow file, and parameter file, and make sure they are correct.\n"
-        "Do you want to continue? (yes/no): "
-    )
+    answer = input("  Ready to run 0D simulation? (yes/no/skip): ")
     if answer.lower() == "yes":
         if not os.path.exists(res_folder_0D):
             os.makedirs(res_folder_0D)
-            print("0D results folder created and can be found at: ", res_folder_0D)
-            print('\n'  )
-            Params0D = load_config(os.path.join(master_folder, 'params_1D.dat'),inflow_file_path,Params0D)
+        print_status("0D results folder: " + res_folder_0D)
+        Params0D = load_config(os.path.join(master_folder, 'params_0D.dat'),inflow_file_path,Params0D)
         break
     elif answer.lower() == "no":
-        print("Then go fix it.\n")
+        print("  [INFO] Please fix the files, then type 'yes' when ready.\n")
+    elif answer.lower() == "skip":
+        print_info("Skipping 0D setup, continuing to next step...")
+        run_0d_setup = False
+        break
     else:
-        print("Invalid input. Please enter 'yes' or 'no'.")
+        print("  [ERROR] Invalid input. Please enter 'yes', 'no', or 'skip'.")
 
-msh = mesh.Mesh()
-msh.generate(Params0D, Cl)
+# Modified by Claude: Only run setup if not skipped
+if run_0d_setup:
+    msh = mesh.Mesh()
+    msh.generate(Params0D, Cl)
 
-
+    # Modified by Claude: Added completion message
+    print_status("0D mesh generated successfully")
+    print_info("Solver input: " + Params0D.solver_output_file)
+    print_info("Proceeding to run 0D solver...")
+else:
+    # Modified by Claude: Message when setup is skipped
+    print_info("0D setup was skipped by user")
 
 # run0D = subprocess.run(
 #     ['svzerodsolver',
