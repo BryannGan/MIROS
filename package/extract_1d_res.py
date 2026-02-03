@@ -65,6 +65,16 @@ except ImportError as e:
     sys.exit(1)
 
 # ========================================================================
+# ============================ Unit Conversion ============================
+
+MMHG_TO_CGS = 1333.22  # 1 mmHg = 1333.22 dyn/cm^2
+
+def cgs_to_mmhg(pressure_cgs):
+    """Convert pressure from CGS (dyn/cm^2) to mmHg."""
+    return pressure_cgs / MMHG_TO_CGS
+
+
+# ========================================================================
 # ============================ Helper Functions ===========================
 
 def prepare_results_directory():
@@ -244,6 +254,108 @@ def extract_results(config: dict):
         return False
 
 
+def convert_pressure_to_mmhg():
+    """
+    Post-process extracted results to convert pressure from CGS to mmHg.
+    This makes the results easier to interpret for users.
+
+    Converts:
+    - CSV files: pressure columns
+    - VTP files: pressure point data arrays
+    - VTU files: pressure point data arrays
+    """
+    import pandas as pd
+    try:
+        import vtk
+        from vtk.util import numpy_support
+    except ImportError:
+        print_info("VTK not available for file conversion")
+        return
+
+    print_info("Converting pressure values to mmHg...")
+
+    # Convert CSV files
+    csv_files = list(Path(res_folder_1D).glob("*pressure*.csv"))
+    for csv_file in csv_files:
+        try:
+            df = pd.read_csv(csv_file)
+            # Convert all numeric columns (except time-like columns)
+            for col in df.columns:
+                if col.lower() not in ['time', 'segment', 'name', 'index']:
+                    if df[col].dtype in ['float64', 'float32', 'int64', 'int32']:
+                        df[col] = cgs_to_mmhg(df[col])
+            # Save with mmHg suffix
+            new_name = csv_file.stem.replace('pressure', 'pressure_mmHg') + '.csv'
+            df.to_csv(csv_file.parent / new_name, index=False)
+            print_info(f"  Converted: {new_name}")
+        except Exception as e:
+            print_info(f"  Could not convert {csv_file.name}: {str(e)}")
+
+    # Convert VTP files (centerline results)
+    vtp_files = list(Path(res_folder_1D).glob("*.vtp"))
+    for vtp_file in vtp_files:
+        try:
+            reader = vtk.vtkXMLPolyDataReader()
+            reader.SetFileName(str(vtp_file))
+            reader.Update()
+            polydata = reader.GetOutput()
+
+            # Convert pressure arrays in point data
+            point_data = polydata.GetPointData()
+            for i in range(point_data.GetNumberOfArrays()):
+                array_name = point_data.GetArrayName(i)
+                if 'pressure' in array_name.lower():
+                    arr = point_data.GetArray(i)
+                    np_arr = numpy_support.vtk_to_numpy(arr)
+                    np_arr_mmhg = cgs_to_mmhg(np_arr)
+                    new_arr = numpy_support.numpy_to_vtk(np_arr_mmhg, deep=True)
+                    new_name = array_name.replace('pressure', 'pressure_mmHg')
+                    new_arr.SetName(new_name)
+                    point_data.AddArray(new_arr)
+
+            # Save modified file
+            writer = vtk.vtkXMLPolyDataWriter()
+            writer.SetFileName(str(vtp_file))
+            writer.SetInputData(polydata)
+            writer.Write()
+            print_info(f"  Updated pressure arrays in: {vtp_file.name}")
+        except Exception as e:
+            print_info(f"  Could not convert {vtp_file.name}: {str(e)}")
+
+    # Convert VTU files (volume mesh results)
+    vtu_files = list(Path(res_folder_1D).glob("*.vtu"))
+    for vtu_file in vtu_files:
+        try:
+            reader = vtk.vtkXMLUnstructuredGridReader()
+            reader.SetFileName(str(vtu_file))
+            reader.Update()
+            ugrid = reader.GetOutput()
+
+            # Convert pressure arrays in point data
+            point_data = ugrid.GetPointData()
+            for i in range(point_data.GetNumberOfArrays()):
+                array_name = point_data.GetArrayName(i)
+                if 'pressure' in array_name.lower():
+                    arr = point_data.GetArray(i)
+                    np_arr = numpy_support.vtk_to_numpy(arr)
+                    np_arr_mmhg = cgs_to_mmhg(np_arr)
+                    new_arr = numpy_support.numpy_to_vtk(np_arr_mmhg, deep=True)
+                    new_name = array_name.replace('pressure', 'pressure_mmHg')
+                    new_arr.SetName(new_name)
+                    point_data.AddArray(new_arr)
+
+            # Save modified file
+            writer = vtk.vtkXMLUnstructuredGridWriter()
+            writer.SetFileName(str(vtu_file))
+            writer.SetInputData(ugrid)
+            writer.Write()
+            print_info(f"  Updated pressure arrays in: {vtu_file.name}")
+        except Exception as e:
+            print_info(f"  Could not convert {vtu_file.name}: {str(e)}")
+
+    print_status("Pressure conversion complete")
+
+
 def list_output_files():
     """
     List the generated output files.
@@ -389,12 +501,18 @@ if __name__ == "__main__":
     success = extract_results(config_1d)
 
     if success:
+        # Convert pressure from CGS to mmHg for easier interpretation
+        print_section_header("POST-PROCESSING: PRESSURE UNIT CONVERSION")
+        convert_pressure_to_mmhg()
+
         print_section_header("EXTRACTION COMPLETE")
         list_output_files()
 
         # Modified by Claude: Visualization instructions
         print("\n" + "-" * 70)
         print("  To visualize results in ParaView:")
+        print("  NOTE: Pressure values are now in mmHg (converted from CGS)")
+        print("        Look for 'pressure_mmHg' arrays in VTP/VTU files")
         print("-" * 70)
         print("  Centerline visualization:")
         print("    - Load: " + os.path.join(res_folder_1D, "extracted_results.vtp"))

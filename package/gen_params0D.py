@@ -63,34 +63,44 @@ else:
     Cl.read(Params0D, Params0D.centerlines_output_file)
     print_status("Centerlines loaded from: " + Params0D.centerlines_output_file)
 
-# Modified by Claude: Improved user input section with clear formatting
-print("\n" + "-" * 70)
-print("  >>> USER INPUT REQUIRED <<<")
-print("-" * 70)
-print("  Before running 0D simulation, please verify the following files:")
-print("    1. RCR boundary condition file: " + os.path.join(master_folder, 'rcrt.dat'))
-print("    2. Inflow file: " + inflow_file_path)
-print("    3. Parameter file: " + os.path.join(master_folder, 'params_0D.dat'))
-print("-" * 70)
+# Check if running in BC tuning mode (skip prompts)
+bc_tuning_mode = os.environ.get('MIROS_BC_TUNING_MODE', '0') == '1'
 
-# Modified by Claude: Added 'skip' option to bypass 0D setup
 run_0d_setup = True  # Flag to track if we should run the setup
-while True:
-    answer = input("  Ready to run 0D simulation? (yes/no/skip): ")
-    if answer.lower() == "yes":
-        if not os.path.exists(res_folder_0D):
-            os.makedirs(res_folder_0D)
-        print_status("0D results folder: " + res_folder_0D)
-        Params0D = load_config(os.path.join(master_folder, 'params_0D.dat'),inflow_file_path,Params0D)
-        break
-    elif answer.lower() == "no":
-        print("  [INFO] Please fix the files, then type 'yes' when ready.\n")
-    elif answer.lower() == "skip":
-        print_info("Skipping 0D setup, continuing to next step...")
-        run_0d_setup = False
-        break
-    else:
-        print("  [ERROR] Invalid input. Please enter 'yes', 'no', or 'skip'.")
+
+if bc_tuning_mode:
+    # BC tuning mode: skip prompts, auto-proceed
+    print_info("Running in BC tuning mode - skipping manual prompts")
+    if not os.path.exists(res_folder_0D):
+        os.makedirs(res_folder_0D)
+    Params0D = load_config(os.path.join(master_folder, 'params_0D.dat'), inflow_file_path, Params0D)
+else:
+    # Normal mode: show prompts
+    print("\n" + "-" * 70)
+    print("  >>> USER INPUT REQUIRED <<<")
+    print("-" * 70)
+    print("  Before running 0D simulation, please verify the following files:")
+    print("    1. RCR boundary condition file: " + os.path.join(master_folder, 'rcrt.dat'))
+    print("    2. Inflow file: " + inflow_file_path)
+    print("    3. Parameter file: " + os.path.join(master_folder, 'params_0D.dat'))
+    print("-" * 70)
+
+    while True:
+        answer = input("  Ready to run 0D simulation? (yes/no/skip): ")
+        if answer.lower() == "yes":
+            if not os.path.exists(res_folder_0D):
+                os.makedirs(res_folder_0D)
+            print_status("0D results folder: " + res_folder_0D)
+            Params0D = load_config(os.path.join(master_folder, 'params_0D.dat'),inflow_file_path,Params0D)
+            break
+        elif answer.lower() == "no":
+            print("  [INFO] Please fix the files, then type 'yes' when ready.\n")
+        elif answer.lower() == "skip":
+            print_info("Skipping 0D setup, continuing to next step...")
+            run_0d_setup = False
+            break
+        else:
+            print("  [ERROR] Invalid input. Please enter 'yes', 'no', or 'skip'.")
 
 # Modified by Claude: Only run setup if not skipped
 if run_0d_setup:

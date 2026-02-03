@@ -53,6 +53,16 @@ except ImportError as e:
     sys.exit(1)
 
 # ========================================================================
+# ============================ Unit Conversion ============================
+
+MMHG_TO_CGS = 1333.22  # 1 mmHg = 1333.22 dyn/cm^2
+
+def cgs_to_mmhg(pressure_cgs):
+    """Convert pressure from CGS (dyn/cm^2) to mmHg."""
+    return pressure_cgs / MMHG_TO_CGS
+
+
+# ========================================================================
 # ============================ Helper Functions ===========================
 
 def get_cardiac_cycle_duration():
@@ -157,14 +167,15 @@ def extract_last_cycle(df, cycle_duration):
 def compute_statistics(seg_data):
     """
     Compute summary statistics for a segment.
+    Pressure values are converted to mmHg for easier interpretation.
     """
     stats = {
         'mean_flow_in': seg_data['flow_in'].mean(),
         'mean_flow_out': seg_data['flow_out'].mean(),
-        'mean_pressure_in': seg_data['pressure_in'].mean(),
-        'mean_pressure_out': seg_data['pressure_out'].mean(),
-        'max_pressure_in': seg_data['pressure_in'].max(),
-        'min_pressure_in': seg_data['pressure_in'].min(),
+        'mean_pressure_in_mmHg': cgs_to_mmhg(seg_data['pressure_in'].mean()),
+        'mean_pressure_out_mmHg': cgs_to_mmhg(seg_data['pressure_out'].mean()),
+        'max_pressure_in_mmHg': cgs_to_mmhg(seg_data['pressure_in'].max()),
+        'min_pressure_in_mmHg': cgs_to_mmhg(seg_data['pressure_in'].min()),
         'max_flow_in': seg_data['flow_in'].max(),
         'min_flow_in': seg_data['flow_in'].min(),
     }
@@ -174,6 +185,7 @@ def compute_statistics(seg_data):
 def plot_segment_waveforms(seg_data, segment_name, save_path=None):
     """
     Plot flow and pressure waveforms for a segment.
+    Pressure is displayed in mmHg for easier interpretation.
     """
     fig, axes = plt.subplots(2, 1, figsize=(10, 8))
 
@@ -187,12 +199,12 @@ def plot_segment_waveforms(seg_data, segment_name, save_path=None):
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    # Pressure plot
+    # Pressure plot (convert to mmHg)
     ax2 = axes[1]
-    ax2.plot(seg_data['time'], seg_data['pressure_in'], 'b-', label='Pressure In', linewidth=1.5)
-    ax2.plot(seg_data['time'], seg_data['pressure_out'], 'r--', label='Pressure Out', linewidth=1.5)
+    ax2.plot(seg_data['time'], cgs_to_mmhg(seg_data['pressure_in']), 'b-', label='Pressure In', linewidth=1.5)
+    ax2.plot(seg_data['time'], cgs_to_mmhg(seg_data['pressure_out']), 'r--', label='Pressure Out', linewidth=1.5)
     ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Pressure (dyn/cm^2)')
+    ax2.set_ylabel('Pressure (mmHg)')
     ax2.set_title('Pressure Waveform - ' + segment_name)
     ax2.legend()
     ax2.grid(True, alpha=0.3)
@@ -209,6 +221,7 @@ def plot_segment_waveforms(seg_data, segment_name, save_path=None):
 def plot_all_outlets(df, outlets, cycle_duration, save_path=None):
     """
     Plot all outlet waveforms on a single figure.
+    Pressure is displayed in mmHg for easier interpretation.
     """
     n_outlets = len(outlets)
 
@@ -228,9 +241,9 @@ def plot_all_outlets(df, outlets, cycle_duration, save_path=None):
         axes[i, 0].set_title(outlet + ' - Flow')
         axes[i, 0].grid(True, alpha=0.3)
 
-        # Pressure
-        axes[i, 1].plot(seg_data['time'], seg_data['pressure_out'], 'r-', linewidth=1.5)
-        axes[i, 1].set_ylabel('Pressure')
+        # Pressure (convert to mmHg)
+        axes[i, 1].plot(seg_data['time'], cgs_to_mmhg(seg_data['pressure_out']), 'r-', linewidth=1.5)
+        axes[i, 1].set_ylabel('Pressure (mmHg)')
         axes[i, 1].set_title(outlet + ' - Pressure')
         axes[i, 1].grid(True, alpha=0.3)
 
@@ -250,6 +263,7 @@ def plot_all_outlets(df, outlets, cycle_duration, save_path=None):
 def save_summary_statistics(df, outlets, cycle_duration, output_path):
     """
     Save summary statistics to a CSV file.
+    Pressure values are in mmHg for easier interpretation.
     """
     stats_list = []
 
@@ -262,9 +276,9 @@ def save_summary_statistics(df, outlets, cycle_duration, output_path):
 
     stats_df = pd.DataFrame(stats_list)
 
-    # Reorder columns
+    # Reorder columns (pressure now in mmHg)
     cols = ['segment', 'mean_flow_in', 'mean_flow_out', 'max_flow_in', 'min_flow_in',
-            'mean_pressure_in', 'mean_pressure_out', 'max_pressure_in', 'min_pressure_in']
+            'mean_pressure_in_mmHg', 'mean_pressure_out_mmHg', 'max_pressure_in_mmHg', 'min_pressure_in_mmHg']
     stats_df = stats_df[cols]
 
     stats_df.to_csv(output_path, index=False)

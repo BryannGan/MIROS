@@ -70,6 +70,28 @@ edge_min = edge_size
 edge_max = edge_size
 
 
+# ========================================================================
+# Automatic Boundary Condition Tuning Parameters
+# ========================================================================
+# These parameters control the automatic RCR boundary condition optimization
+# when users don't have pre-defined boundary conditions but know target
+# physiological values (flow distribution and pressures).
+#
+# Rp_ratio: Ratio of proximal resistance to total resistance (Rp / (Rp + Rd))
+#           Typical physiological value is 0.05-0.10 (5-10%)
+# default_capacitance: Initial capacitance value for optimization (cm^5/dyn)
+# tuning_max_iterations: Maximum optimizer iterations
+# tuning_tolerance: Target objective function value for convergence
+# ========================================================================
+default_Rp_ratio = 0.09  # Rp = 9% of total R (standard physiological value)
+default_capacitance = 0.0001  # Initial C value (cm^5/dyn)
+tuning_max_iterations = 200  # Maximum optimization iterations
+tuning_tolerance = 0.01  # Target objective value for convergence
+
+# Unit conversion constants
+MMHG_TO_CGS = 1333.22  # 1 mmHg = 1333.22 dyn/cm^2
+
+
 # DO NOT r change the following, unless you are changing the workflow or developing new features
 bc_filename = 'rcrt.dat' 
 res_folder_1D = os.path.join(master_folder, '1D_results')
@@ -83,6 +105,8 @@ inflow_file_path = os.path.join(master_folder, 'inflow_1d.flow')
 __all__ = ['OneDSolv', 'segseqed_model', 'master_folder', 'local_py_bin', 'sv_py_bin',
            'bc_filename', 'res_folder_1D', 'res_folder_0D',
            'edge_size', 'edge_min', 'edge_max', 'caps_folder', 'inflow_file_path', 'seqseg_cl', 'Windows', 'sv_dir', 'sv_bat',
-           'clipped_seqseg_results','surf_name', 'automatic_define_outlets'
+           'clipped_seqseg_results','surf_name', 'automatic_define_outlets',
+           # BC tuning parameters
+           'default_Rp_ratio', 'default_capacitance', 'tuning_max_iterations', 'tuning_tolerance', 'MMHG_TO_CGS'
            ]
 

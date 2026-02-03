@@ -113,16 +113,27 @@ if run_1d_sim:
 
     # make sure simulation run successfully
     num_of_file_in_res_folder_1D = len([f for f in os.listdir(res_folder_1D)])
-    #pdb.set_trace()
+    max_seg_retries = 10
+    retry_count = 0
+    initial_seg_min = Params1D.seg_min_num
     while num_of_file_in_res_folder_1D <= 3:
-        # Modified by Claude: improved error recovery messages
+        retry_count += 1
+        if retry_count > max_seg_retries:
+            print("\n" + "=" * 70)
+            print("  [ERROR] 1D simulation failed after " + str(max_seg_retries) + " retries")
+            print("  Tried seg_min_num from " + str(initial_seg_min) + " to " + str(Params1D.seg_min_num))
+            print("  The geometry may be too challenging for the 1D solver.")
+            print("  Consider simplifying the model or checking the mesh quality.")
+            print("=" * 70)
+            break
         print("\n" + "-" * 70)
         print("  [WARNING] Simulation may have failed (insufficient output files)")
+        print("  Retry " + str(retry_count) + "/" + str(max_seg_retries))
         print("-" * 70)
         print("  Common cause: Large difference in inlet/outlet areas causing")
         print("  negative outlet areas. Auto-adjusting mesh segmentation...")
         Params1D.seg_min_num = Params1D.seg_min_num + 1
-        print_info("New minimum segments: " + str(Params1D.seg_min_num))
+        print_info("New minimum segments per branch: " + str(Params1D.seg_min_num))
         msh.generate(Params1D, Cl)
         try:
             print_info("Re-running 1D simulation...")
@@ -132,8 +143,13 @@ if run_1d_sim:
             print("  [INFO] Continuing to adjust mesh segmentation...")
         num_of_file_in_res_folder_1D = len([f for f in os.listdir(res_folder_1D)])
 
-    print_status("1D simulation completed successfully!")
-    print_info("Results saved to: " + res_folder_1D)
+    if num_of_file_in_res_folder_1D > 3:
+        if retry_count > 0:
+            print_status("1D simulation completed successfully after " + str(retry_count) + " retry(ies)!")
+            print_info("Final seg_min_num: " + str(Params1D.seg_min_num) + " (started at " + str(initial_seg_min) + ")")
+        else:
+            print_status("1D simulation completed successfully!")
+        print_info("Results saved to: " + res_folder_1D)
 else:
     # Modified by Claude: Message when simulation is skipped
     print_info("1D simulation was skipped by user")

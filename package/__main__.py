@@ -32,18 +32,24 @@ print("\n" + "=" * 70)
 print("  MIROS - Medical Image to Reduced-Order Simulation")
 print("=" * 70)
 print("\n  Select run mode:\n")
-print("    [1] Full workflow - Run entire pipeline (preprocessing, simulations, extraction)")
-print("    [2] Extract 1D results only - Skip to 1D result extraction")
-print("    [3] Extract 0D results only - Skip to 0D result extraction")
+print("    [1] Full workflow with automatic boundary condition tuning (Recommended)")
+print("        -> Interactively set flow splits and pressure targets")
+print("        -> Optimizer finds optimal boundary conditions automatically")
+print("")
+print("    [2] Full workflow with manual boundary conditions")
+print("        -> User provides rcrt.dat file with pre-defined values")
+print("")
+print("    [3] Extract 1D results only - Skip to 1D result extraction")
+print("    [4] Extract 0D results only - Skip to 0D result extraction")
 print("")
 
 run_mode = None
-while run_mode not in ['1', '2', '3']:
-    run_mode = input("  Enter choice (1, 2, or 3): ").strip()
-    if run_mode not in ['1', '2', '3']:
-        print("  Invalid choice. Please enter 1, 2, or 3.")
+while run_mode not in ['1', '2', '3', '4']:
+    run_mode = input("  Enter choice (1, 2, 3, or 4): ").strip()
+    if run_mode not in ['1', '2', '3', '4']:
+        print("  Invalid choice. Please enter 1, 2, 3, or 4.")
 
-if run_mode in ['2', '3']:
+if run_mode in ['3', '4']:
     print("\n  " + "-" * 60)
     print("  Skipping to result extraction...")
     print("  " + "-" * 60 + "\n")
@@ -59,6 +65,7 @@ gen_inflow        = os.path.join(pkg_dir, 'gen_inflow.py')
 run_0D         = os.path.join(pkg_dir, 'run_0D.py')
 extract_1d_res = os.path.join(pkg_dir, 'extract_1d_res.py')
 extract_0d_res = os.path.join(pkg_dir, 'extract_0d_res.py')
+tune_bc = os.path.join(pkg_dir, 'tune_bc.py')  # Automatic BC tuning module
 
 # # ========================================================================
 # # ======================= post-process seqseg results  ===================
@@ -98,10 +105,14 @@ extract_0d_res = os.path.join(pkg_dir, 'extract_0d_res.py')
 # # ============================ pre-process ==============================
 
 # =======================================================================
-# ============================ FULL WORKFLOW (Mode 1) ===================
+# ============================ FULL WORKFLOW (Mode 1 & 2) ===============
 # =======================================================================
 
-if run_mode == '1':
+if run_mode in ['1', '2']:
+    # Set environment variable to skip manual prompts in BC tuning mode
+    env_bc_tuning = env.copy()
+    env_bc_tuning['MIROS_BC_TUNING_MODE'] = '1' if run_mode == '1' else '0'
+
     # =======================================================================
     # ============================ pre-process ==============================
     if Windows:
@@ -111,7 +122,7 @@ if run_mode == '1':
             shell=True,
             check=True,
             text=True,
-            env=env,
+            env=env_bc_tuning,
         )
     else:
         subprocess.run(
@@ -119,7 +130,7 @@ if run_mode == '1':
             cwd=os.path.dirname(__file__),
             text=True,
             check=True,
-            env=env
+            env=env_bc_tuning
         )
 
     # =======================================================================
@@ -131,6 +142,202 @@ if run_mode == '1':
         check=True
     )
 
+    # =======================================================================
+    # ==================== BOUNDARY CONDITION HANDLING ======================
+    # =======================================================================
+
+    if run_mode == '1':
+        # Mode 1: Automatic BC tuning (Recommended)
+        # First, write default RCR values (replace placeholder template)
+        print("\n" + "=" * 70)
+        print("  [STEP] Initializing RCR boundary conditions for tuning")
+        print("=" * 70)
+        sys.stdout.flush()
+
+        # Read outlet names directly from caps folder (more robust than centerlines_outlets.dat)
+        # This matches how create_rcr_bc_template() works in helper_func.py
+        rcrt_file = os.path.join(master_folder, bc_filename)
+
+        print("  -> Looking for outlet caps in: " + caps_folder)
+        print("  -> Caps folder exists: " + str(os.path.exists(caps_folder)))
+        sys.stdout.flush()
+
+        if os.path.exists(caps_folder):
+            # Get cap files (excluding inlet.vtp and wall.vtp)
+            cap_files = [f for f in os.listdir(caps_folder)
+                        if f.startswith('cap_') and f.endswith('.vtp')]
+            outlet_names = sorted([os.path.splitext(f)[0] for f in cap_files])
+
+            print("  -> Found " + str(len(outlet_names)) + " outlets: " + ", ".join(outlet_names))
+
+            if len(outlet_names) > 0:
+                # Write rcrt.dat with default numeric values
+                with open(rcrt_file, 'w') as f:
+                    f.write('2\n')  # RCR type
+                    for name in outlet_names:
+                        f.write('2\n')
+                        f.write(name + '\n')
+                        f.write('100.0\n')    # Default Rp
+                        f.write('0.0001\n')   # Default C
+                        f.write('1000.0\n')   # Default Rd
+                        f.write('0.0 0.0\n')
+                        f.write('1.0 0.0\n')
+
+                print("  -> Wrote default RCR values to: " + rcrt_file)
+
+                # Also update centerlines_outlets.dat to match (exclude inlet)
+                outlets_dat_file = os.path.join(master_folder, 'centerlines_outlets.dat')
+                with open(outlets_dat_file, 'w') as f:
+                    for name in outlet_names:
+                        f.write(name + '\n')
+                print("  -> Updated centerlines_outlets.dat with " + str(len(outlet_names)) + " outlets")
+                sys.stdout.flush()
+            else:
+                print("  [ERROR] No outlet caps found in: " + caps_folder)
+                print("  [ERROR] Make sure preprocessing completed and inlet was selected.")
+                sys.stdout.flush()
+                sys.exit(1)
+        else:
+            print("  [ERROR] Caps folder not found: " + caps_folder)
+            print("  [ERROR] Please run preprocessing first (sv_preprocess.py).")
+            sys.stdout.flush()
+            sys.exit(1)
+
+        # Now generate 0D solver input
+        print("\n" + "=" * 70)
+        print("  [STEP] Setting up 0D solver (required for BC tuning)")
+        print("=" * 70)
+
+        if Windows:
+            subprocess.run(
+                f'"{sv_bat}" --python -- "{gen_params0D}"',
+                cwd=sv_dir,
+                shell=True,
+                check=True,
+                text=True,
+                env=env_bc_tuning,
+            )
+        else:
+            subprocess.run(
+                [sv_py_bin, "--python", "--", gen_params0D],
+                cwd=os.path.dirname(__file__),
+                text=True,
+                check=True,
+                env=env_bc_tuning
+            )
+
+        # Now run BC tuning (updates 0D_solver_input.json with optimized BCs)
+        print("\n" + "=" * 70)
+        print("  [STEP] Automatic Boundary Condition Tuning")
+        print("=" * 70 + "\n")
+
+        subprocess.run(
+            [local_py_bin, tune_bc],
+            cwd=os.path.dirname(__file__),
+            text=True,
+            check=True,
+            env=env
+        )
+
+        # Run 0D with optimized BCs
+        print("\n" + "=" * 70)
+        print("  [STEP] Running 0D simulation with optimized BCs")
+        print("=" * 70)
+
+        if Windows:
+            subprocess.run(
+                f'"{sv_bat}" --python -- "{run_0D}"',
+                cwd=sv_dir,
+                shell=True,
+                check=True,
+                text=True,
+                env=env,
+            )
+        else:
+            subprocess.run(
+                [local_py_bin, run_0D],
+                cwd=os.path.dirname(__file__),
+                text=True,
+                check=True
+            )
+
+    else:
+        # Mode 2: Manual BC - prompt user to edit rcrt.dat
+        rcrt_path = os.path.join(master_folder, bc_filename)
+        print("\n" + "=" * 70)
+        print("  [ACTION REQUIRED] Edit Boundary Conditions")
+        print("=" * 70)
+        print(f"\n  Please edit the RCR boundary condition file:")
+        print(f"  {rcrt_path}")
+        print("\n  Set appropriate Rp (proximal resistance), C (capacitance),")
+        print("  and Rd (distal resistance) values for each outlet based on")
+        print("  your physiological targets.")
+        print("")
+        input("  Press Enter when you have finished editing rcrt.dat...")
+
+        # =======================================================================
+        # ============================ 0D WORKFLOW (Mode 2) =====================
+        # =======================================================================
+
+        # ============================ set up 0D ================================
+        if Windows:
+            subprocess.run(
+                f'"{sv_bat}" --python -- "{gen_params0D}"',
+                cwd=sv_dir,
+                shell=True,
+                check=True,
+                text=True,
+                env=env,
+            )
+        else:
+            subprocess.run(
+                [sv_py_bin, "--python", "--", gen_params0D],
+                cwd=os.path.dirname(__file__),
+                text=True,
+                check=True
+            )
+
+        # =========================== Run 0D ====================================
+        if Windows:
+            subprocess.run(
+                f'"{sv_bat}" --python -- "{run_0D}"',
+                cwd=sv_dir,
+                shell=True,
+                check=True,
+                text=True,
+                env=env,
+            )
+        else:
+            subprocess.run(
+                [local_py_bin, run_0D],
+                cwd=os.path.dirname(__file__),
+                text=True,
+                check=True
+            )
+
+# =======================================================================
+# ============================ extract 0D results =======================
+# This runs for mode 1, 2 (full workflows) or mode 4 (0D extraction only)
+# =======================================================================
+
+if run_mode in ['1', '2', '4']:
+    print("\n" + "=" * 70)
+    print("  [STEP] 0D Result Extraction")
+    print("=" * 70)
+
+    subprocess.run(
+        [local_py_bin, extract_0d_res],
+        cwd=os.path.dirname(__file__),
+        text=True,
+        check=True,
+        env=env
+    )
+
+# =======================================================================
+# ============================ 1D WORKFLOW (Mode 1 & 2) =================
+# =======================================================================
+
+if run_mode in ['1', '2']:
     # =======================================================================
     # ============================= set up 1D and run 1D ====================
     if Windows:
@@ -152,10 +359,10 @@ if run_mode == '1':
 
 # =======================================================================
 # ============================ extract 1D results =======================
-# This runs for mode 1 (full) or mode 2 (1D extraction only)
+# This runs for mode 1, 2 (full workflows) or mode 3 (1D extraction only)
 # =======================================================================
 
-if run_mode in ['1', '2']:
+if run_mode in ['1', '2', '3']:
     print("\n" + "=" * 70)
     print("  [STEP] 1D Result Extraction")
     print("=" * 70)
@@ -179,79 +386,22 @@ if run_mode in ['1', '2']:
         )
 
 # =======================================================================
-# ============================ 0D WORKFLOW (Mode 1 only) ================
-# =======================================================================
-
-if run_mode == '1':
-    # =======================================================================
-    # ============================ set up 0D ================================
-    if Windows:
-        subprocess.run(
-            f'"{sv_bat}" --python -- "{gen_params0D}"',
-            cwd=sv_dir,
-            shell=True,
-            check=True,
-            text=True,
-            env=env,
-        )
-    else:
-        subprocess.run(
-            [sv_py_bin, "--python", "--", gen_params0D],
-            cwd=os.path.dirname(__file__),
-            text=True,
-            check=True
-        )
-
-    # =======================================================================
-    # =========================== Run 0D ====================================
-    if Windows:
-        subprocess.run(
-            f'"{sv_bat}" --python -- "{run_0D}"',
-            cwd=sv_dir,
-            shell=True,
-            check=True,
-            text=True,
-            env=env,
-        )
-    else:
-        subprocess.run(
-            [local_py_bin, run_0D],
-            cwd=os.path.dirname(__file__),
-            text=True,
-            check=True
-        )
-
-# =======================================================================
-# ============================ extract 0D results =======================
-# This runs for mode 1 (full) or mode 3 (0D extraction only)
-# =======================================================================
-
-if run_mode in ['1', '3']:
-    print("\n" + "=" * 70)
-    print("  [STEP] 0D Result Extraction")
-    print("=" * 70)
-
-    subprocess.run(
-        [local_py_bin, extract_0d_res],
-        cwd=os.path.dirname(__file__),
-        text=True,
-        check=True,
-        env=env
-    )
-
-# =======================================================================
 # ============================ Done =====================================
 # =======================================================================
 
 if run_mode == '1':
     print("\n" + "=" * 70)
-    print("  MIROS workflow complete!")
+    print("  MIROS workflow complete! (Automatic Boundary Condition Tuning)")
     print("=" * 70 + "\n")
 elif run_mode == '2':
     print("\n" + "=" * 70)
-    print("  1D result extraction complete!")
+    print("  MIROS workflow complete! (Manual Boundary Conditions)")
     print("=" * 70 + "\n")
 elif run_mode == '3':
+    print("\n" + "=" * 70)
+    print("  1D result extraction complete!")
+    print("=" * 70 + "\n")
+elif run_mode == '4':
     print("\n" + "=" * 70)
     print("  0D result extraction complete!")
     print("=" * 70 + "\n")

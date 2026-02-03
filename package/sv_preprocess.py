@@ -218,13 +218,20 @@ print_status("RCR boundary condition template created: " + os.path.join(master_f
 helper_txt_path = write_helper_txt(master_folder, caps_folder)
 
 # --- User action required notice (Modified by Claude) ---
-print("\n" + "-" * 70)
-print("  >>> ACTION REQUIRED <<<")
-print("-" * 70)
-print("  1. Edit the RCR boundary condition file:")
-print("     " + os.path.join(master_folder, bc_filename))
-print("  2. Reference model_info.txt for cap areas to help set RCR values")
-print("-" * 70)
-print("  Pre-processing complete. Continuing to next step...")
-print("-" * 70 + "\n")
+# Skip this message in BC tuning mode since BCs will be auto-generated
+bc_tuning_mode = os.environ.get('MIROS_BC_TUNING_MODE', '0') == '1'
+
+if not bc_tuning_mode:
+    print("\n" + "-" * 70)
+    print("  >>> ACTION REQUIRED <<<")
+    print("-" * 70)
+    print("  1. Edit the RCR boundary condition file:")
+    print("     " + os.path.join(master_folder, bc_filename))
+    print("  2. Reference model_info.txt for cap areas to help set RCR values")
+    print("-" * 70)
+    print("  Pre-processing complete. Continuing to next step...")
+    print("-" * 70 + "\n")
+else:
+    print_info("BC tuning mode - RCR values will be optimized automatically")
+    print_status("Pre-processing complete")
 
