@@ -1,0 +1,878 @@
+"""
+`miros gui`: the whole workflow in one window.
+
+Left, always: the 3D model in the `miros show caps` style (light-gray
+wall, crimson inlet, steel-blue outlets, labels with name and area), later
+also the 1D results painted onto the vessels.
+
+Right, as steps:
+    1 Model     pick the clipped surface (and units), create or open the case
+    2 Inflow    draw one cardiac cycle on an embedded editor, or load a file
+    3 Targets   name caps, choose the inlet, flow shares, pressure anchor/targets
+    4 Run       run the stale stages in the background with a live log
+    5 Results   per-outlet numbers, the 0D plot, and 1D pressure/flow on the 3D view
+
+Needs the GUI extra: pip install pyvistaqt PySide6
+"""
+import contextlib
+import io
+import json
+import os
+import re
+import sys
+import traceback
+from pathlib import Path
+from typing import List, Optional
+
+import numpy as np
+
+_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]*$')
+STAGES = ['preprocess', 'inflow', 'rom_model', 'tune', 'sim_0d', 'extract_0d', 'volume_mesh', 'sim_1d', 'extract_1d']
+
+
+def _require_qt():
+    try:
+        import pyvistaqt  # noqa: F401
+        import qtpy  # noqa: F401
+    except ImportError:
+        raise RuntimeError("the MIROS window needs the GUI extra: pip install pyvistaqt PySide6")
+
+
+# ============================================================================
+# 3D view
+
+class Viewer:
+    """The QtInteractor with the `show caps` styling; None-safe when offscreen."""
+
+    WALL = dict(color='lightgray', opacity=0.5)
+    INLET, OUTLET, SELECTED = 'crimson', 'steelblue', 'gold'
+
+    def __init__(self, parent, offscreen: bool):
+        self.plotter = None
+        self.widget = None
+        self.actors = {}
+        self._pick_cb = None
+        self._camera_set = False
+        self._results = None
+        if not offscreen:
+            from pyvistaqt import QtInteractor
+            self.plotter = QtInteractor(parent)
+            self.widget = self.plotter.interactor
+
+    @property
+    def can_pick(self):
+        return self.plotter is not None and getattr(self.plotter, 'iren', None) is not None
+
+    def clear(self):
+        if self.plotter is not None:
+            self.plotter.clear()
+            self.plotter.clear_slider_widgets()
+        self.actors = {}
+        self._results = None
+
+    def show_model(self, surf, caps, names: List[str], inlet_row: int, selected: Optional[int] = None,
+                   pick_callback=None):
+        if self.plotter is None:
+            return
+        import pyvista as pv
+        self.clear()
+        self.plotter.add_mesh(pv.wrap(surf), name='wall', **self.WALL)
+        for i, c in enumerate(caps):
+            color = self.SELECTED if i == selected else (self.INLET if i == inlet_row else self.OUTLET)
+            self.actors[i] = self.plotter.add_mesh(pv.wrap(c.polydata), color=color, opacity=0.9, name='cap%d' % i)
+        self.labels(caps, names, inlet_row)
+        if pick_callback is not None and self.can_pick:
+            self._pick_cb = pick_callback
+            self.plotter.enable_mesh_picking(callback=pick_callback, show=False, show_message=False, left_clicking=True)
+            self.plotter.add_text('click a cap to select it', position='lower_left', font_size=10, name='hint')
+        if not self._camera_set:
+            self.plotter.reset_camera()
+            self._camera_set = True
+        self.plotter.render()
+
+    def labels(self, caps, names, inlet_row):
+        if self.plotter is None:
+            return
+        pts = np.array([c.centroid + 1.5 * c.radius * c.normal for c in caps])
+        txt = ['%s%s\n%.3f cm²' % (names[i], ' (inlet)' if i == inlet_row else '', c.area) for i, c in enumerate(caps)]
+        self.plotter.add_point_labels(pts, txt, name='labels', font_size=12, point_size=0, shape_opacity=0.6,
+                                      always_visible=True)
+
+    def highlight(self, caps, inlet_row, selected):
+        if self.plotter is None or not self.actors:
+            return
+        for i, c in enumerate(caps):
+            self.actors[i].prop.color = self.SELECTED if i == selected else (self.INLET if i == inlet_row else self.OUTLET)
+        self.plotter.render()
+
+    def show_results(self, vtp_path, quantity: str, surf=None):
+        """Tube of the 1D centerline coloured by `quantity` ('pressure_mmHg' | 'flow' | 'area'), with a time slider."""
+        if self.plotter is None:
+            return
+        import pyvista as pv
+        cl = pv.read(str(vtp_path))
+        keys = [k for k in cl.point_data.keys() if k.startswith(quantity + '_')]
+        if not keys:
+            raise RuntimeError("no %s arrays in %s" % (quantity, vtp_path))
+        times = np.array([float(k[len(quantity) + 1:]) for k in keys])
+        order = np.argsort(times)
+        keys = [keys[i] for i in order]
+        times = times[order]
+        stack = np.stack([cl.point_data[k] for k in keys], axis=0)
+        unit = {'pressure_mmHg': 'mmHg', 'flow': 'mL/s', 'area': 'cm²'}.get(quantity, '')
+        clim = (float(np.nanmin(stack)), float(np.nanmax(stack)))
+        self.clear()
+        if surf is not None:
+            self.plotter.add_mesh(pv.wrap(surf), name='wall', color='lightgray', opacity=0.12)
+        base = cl.copy()
+        radius = np.asarray(base.point_data['MaximumInscribedSphereRadius']) if 'MaximumInscribedSphereRadius' in base.point_data else None
+        state = {'i': len(keys) - 1}
+
+        def draw(i):
+            i = int(np.clip(round(i), 0, len(keys) - 1))
+            state['i'] = i
+            base.point_data['value'] = stack[i]
+            if radius is not None:
+                base.point_data['r'] = radius
+                tube = base.tube(scalars='r', absolute=True, n_sides=16, capping=True)
+            else:
+                tube = base.tube(radius=0.15, n_sides=16)
+            self.plotter.add_mesh(tube, name='results', scalars='value', clim=clim, cmap='coolwarm',
+                                  scalar_bar_args=dict(title='%s [%s]' % (quantity.replace('_mmHg', ''), unit)))
+            self.plotter.add_text('t = %.3f s' % (times[i] - times[0]), position='upper_left', font_size=11, name='time')
+
+        draw(state['i'])
+        if self.can_pick:
+            self.plotter.disable_picking()
+        self.plotter.add_slider_widget(draw, rng=(0, len(keys) - 1), value=state['i'], title='time step',
+                                       style='modern', pointa=(0.25, 0.08), pointb=(0.75, 0.08), fmt='%.0f')
+        self._results = (base, stack, times, clim, quantity)
+        self.plotter.render()
+
+    def show_mean_results(self):
+        """Replace the current time step by the cycle mean."""
+        if self.plotter is None or self._results is None:
+            return
+        base, stack, times, clim, quantity = self._results
+        base.point_data['value'] = stack.mean(axis=0)
+        tube = base.tube(scalars='r', absolute=True, n_sides=16, capping=True) if 'r' in base.point_data else base.tube(radius=0.15)
+        self.plotter.add_mesh(tube, name='results', scalars='value', clim=clim, cmap='coolwarm')
+        self.plotter.add_text('cycle mean', position='upper_left', font_size=11, name='time')
+        self.plotter.render()
+
+
+# ============================================================================
+# background run
+
+class _RunEmitter:
+    """Created lazily so the module imports without Qt."""
+
+    @staticmethod
+    def make():
+        from qtpy import QtCore
+
+        class Emitter(QtCore.QObject):
+            line = QtCore.Signal(str)
+            stage = QtCore.Signal(str, str)
+            done = QtCore.Signal(bool, str)
+        return Emitter()
+
+
+class _LineWriter(io.TextIOBase):
+    def __init__(self, emit):
+        super().__init__()
+        self.emit = emit
+        self.buf = ''
+
+    def write(self, s):
+        self.buf += s
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            self.emit(line)
+        return len(s)
+
+    def flush(self):
+        if self.buf:
+            self.emit(self.buf)
+            self.buf = ''
+
+
+def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage) -> None:
+    """The pipeline with console output routed to emit_line; raises on failure."""
+    from ..case import Case
+    w = _LineWriter(emit_line)
+    with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+        Case(case_dir).run(from_stage=from_stage, force=force, progress=emit_stage)
+    w.flush()
+
+
+# ============================================================================
+# main window
+
+class MainWindow:
+    def __init__(self, case_dir=None, offscreen: bool = False, start_tab: int = 0):
+        _require_qt()
+        from qtpy import QtCore, QtWidgets, QtGui
+        self.QtCore, self.W, self.QtGui = QtCore, QtWidgets, QtGui
+        self.offscreen = offscreen
+
+        self.case = None
+        self.surf = None
+        self.caps = []
+        self.names: List[str] = []
+        self.inlet_row = 0
+        self.selected = None
+        self.worker = None
+
+        self.win = QtWidgets.QMainWindow()
+        self.win.setWindowTitle('MIROS')
+        split = QtWidgets.QSplitter()
+        self.win.setCentralWidget(split)
+        self.viewer = Viewer(split, offscreen)
+        if self.viewer.widget is not None:
+            split.addWidget(self.viewer.widget)
+        self.tabs = QtWidgets.QTabWidget()
+        split.addWidget(self.tabs)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+
+        self._build_model_tab()
+        self._build_inflow_tab()
+        self._build_bc_tab()
+        self._build_run_tab()
+        self._build_results_tab()
+        self._enable_tabs(False)
+        self.win.resize(1400, 800)
+        self.win.statusBar()
+
+        if case_dir is not None:
+            self.load_case(Path(case_dir))
+            self.tabs.setCurrentIndex(start_tab)
+
+    # ------------------------------------------------------------ helpers
+    def _enable_tabs(self, loaded: bool):
+        for i in range(1, 5):
+            self.tabs.setTabEnabled(i, loaded)
+
+    def status(self, msg: str):
+        self.win.statusBar().showMessage(msg, 8000)
+
+    def error(self, msg: str):
+        if self.offscreen:
+            self.last_error = msg
+            return
+        self.W.QMessageBox.critical(self.win, 'MIROS', msg)
+
+    def _next_button(self, layout, label='Next ▶', to=None):
+        b = self.W.QPushButton(label)
+        b.clicked.connect(lambda: self.tabs.setCurrentIndex(to if to is not None else self.tabs.currentIndex() + 1))
+        row = self.W.QHBoxLayout()
+        row.addStretch()
+        row.addWidget(b)
+        layout.addLayout(row)
+        return b
+
+    # ------------------------------------------------------------ 1 model
+    def _build_model_tab(self):
+        W = self.W
+        page = W.QWidget()
+        lay = W.QVBoxLayout(page)
+        lay.addWidget(W.QLabel('<b>Start from a clipped model</b><br>The surface must be open at the inlet and at every outlet.'))
+        form = W.QFormLayout()
+        self.surface_edit = W.QLineEdit()
+        b1 = W.QPushButton('Browse…'); b1.clicked.connect(self._browse_surface)
+        r1 = W.QHBoxLayout(); r1.addWidget(self.surface_edit); r1.addWidget(b1)
+        form.addRow('surface (.vtp/.stl/.ply)', r1)
+        self.units = W.QComboBox(); self.units.addItems(['cm', 'mm'])
+        self.units_hint = W.QLabel(''); self.units_hint.setStyleSheet('color: gray')
+        r2 = W.QHBoxLayout(); r2.addWidget(self.units); r2.addWidget(self.units_hint); r2.addStretch()
+        form.addRow('units', r2)
+        self.case_edit = W.QLineEdit()
+        b2 = W.QPushButton('Browse…'); b2.clicked.connect(self._browse_case_dir)
+        r3 = W.QHBoxLayout(); r3.addWidget(self.case_edit); r3.addWidget(b2)
+        form.addRow('case folder', r3)
+        lay.addLayout(form)
+        row = W.QHBoxLayout()
+        self.create_btn = W.QPushButton('Create case from this surface')
+        self.create_btn.clicked.connect(self.create_case)
+        open_btn = W.QPushButton('Open existing case…')
+        open_btn.clicked.connect(self._open_case_dialog)
+        row.addWidget(self.create_btn); row.addWidget(open_btn); row.addStretch()
+        lay.addLayout(row)
+        self.model_info = W.QLabel(''); self.model_info.setWordWrap(True)
+        lay.addWidget(self.model_info)
+        lay.addStretch()
+        self._next_button(lay)
+        self.tabs.addTab(page, '1  Model')
+
+    def _browse_surface(self):
+        f, _ = self.W.QFileDialog.getOpenFileName(self.win, 'Clipped surface', '', 'Surfaces (*.vtp *.stl *.ply)')
+        if f:
+            self.surface_edit.setText(f)
+            self._suggest_from_surface(Path(f))
+
+    def _suggest_from_surface(self, f: Path):
+        from ..geometry import caps as C
+        try:
+            surf = C.read_polydata(f)
+            b = surf.GetBounds()
+            size = max(b[1] - b[0], b[3] - b[2], b[5] - b[4])
+            mm = size > 60
+            self.units.setCurrentText('mm' if mm else 'cm')
+            self.units_hint.setText('largest extent %.1f → looks like %s' % (size, 'mm' if mm else 'cm'))
+        except Exception as e:
+            self.units_hint.setText(str(e)[:80])
+        if not self.case_edit.text():
+            self.case_edit.setText(str(Path.home() / 'miros_cases' / f.stem))
+
+    def _browse_case_dir(self):
+        d = self.W.QFileDialog.getExistingDirectory(self.win, 'Case folder', self.case_edit.text() or str(Path.home()))
+        if d:
+            self.case_edit.setText(d)
+
+    def _open_case_dialog(self):
+        d = self.W.QFileDialog.getExistingDirectory(self.win, 'Open case folder', str(Path.home()))
+        if d:
+            self.load_case(Path(d))
+
+    def create_case(self):
+        from ..config import write_template
+        from ..geometry import caps as C
+        surface = self.surface_edit.text().strip()
+        case_dir = self.case_edit.text().strip()
+        if not surface or not Path(surface).exists():
+            return self.error('choose an existing surface file')
+        if not case_dir:
+            return self.error('choose a case folder')
+        d = Path(case_dir).resolve()
+        d.mkdir(parents=True, exist_ok=True)
+        y = d / 'case.yaml'
+        if y.exists():
+            if not self.offscreen:
+                r = self.W.QMessageBox.question(self.win, 'MIROS', '%s exists. Open it instead?' % y)
+                if r == self.W.QMessageBox.Yes:
+                    return self.load_case(d)
+                return
+        try:
+            caps = C.make_caps(C.read_polydata(surface))
+        except Exception as e:
+            return self.error(str(e))
+        rel = os.path.relpath(Path(surface).resolve(), d)
+        if rel.count('..') > 2:
+            rel = str(Path(surface).resolve())
+        write_template(y, name=d.name, surface=rel, units=self.units.currentText(), inlet=C.inlet_cap(caps).name,
+                       inflow_file='input/inflow.flow', inflow_source='gui',
+                       outlet_names=[c.name for c in C.outlet_caps(caps)])
+        self.load_case(d)
+        self.status('created %s' % y)
+
+    def load_case(self, d: Path):
+        from ..case import Case
+        from ..config import ConfigError
+        from ..geometry import caps as C
+        try:
+            self.case = Case(d)
+        except (ConfigError, FileNotFoundError) as e:
+            return self.error(str(e))
+        m = self.case.config.model
+        src = self.case.resolve(m.surface)
+        try:
+            self.surf = C.read_polydata(src)
+            caps = C.make_caps(self.surf, inlet=m.inlet, names=m.cap_names)
+        except Exception as e:
+            return self.error(str(e))
+        caps.sort(key=lambda c: -c.area)
+        self.caps = caps
+        self.names = [c.name for c in caps]
+        self.inlet_row = next(i for i, c in enumerate(caps) if c.is_inlet)
+        self.selected = None
+        self.surface_edit.setText(str(src))
+        self.case_edit.setText(str(self.case.dir))
+        self.units.setCurrentText(m.units)
+        self.model_info.setText('<b>%s</b> — %d caps, inlet %s, units %s<br>%s' % (
+            self.case.config.name, len(caps), self.names[self.inlet_row], m.units, self.case.yaml))
+        self.win.setWindowTitle('MIROS — %s' % self.case.config.name)
+        self._enable_tabs(True)
+        self.viewer.show_model(self.surf, self.caps, self.names, self.inlet_row, pick_callback=self._picked)
+        self._fill_bc_form()
+        self._load_inflow_into_editor()
+        self.refresh_status()
+        self._fill_results()
+
+    # ------------------------------------------------------------ 2 inflow
+    def _build_inflow_tab(self):
+        W = self.W
+        page = W.QWidget()
+        lay = W.QVBoxLayout(page)
+        lay.addWidget(W.QLabel('<b>One cardiac cycle of inflow</b> — drag the red points; first and last are tied.'))
+        import matplotlib
+        matplotlib.use('QtAgg', force=True)
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from matplotlib.figure import Figure
+        import matplotlib.ticker as mticker
+        from scipy.interpolate import interp1d
+        from .waveform_editor import _DraggablePoints
+        self.fig = Figure(figsize=(6, 3.6))
+        self.canvas = FigureCanvasQTAgg(self.fig)
+        ax = self.fig.add_subplot(111)
+        self.ax = ax
+        self.x_ctrl = np.linspace(0, 1, 20)
+        self.y_ctrl = np.zeros(20)
+        self.x_dense = np.linspace(0, 1, 500)
+        self.line, = ax.plot(self.x_dense, np.zeros(500), lw=2)
+        ax.grid(True, alpha=0.3); ax.set_ylabel('Flow [mL/s]'); ax.set_xlabel('cycle')
+        ax.set_xlim(0, 1); ax.set_ylim(-100, 500)
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, p: '%d%%' % round(v * 100)))
+        self.fig.tight_layout()
+
+        def refresh():
+            f = interp1d(self.x_ctrl, self.y_ctrl, kind='quadratic', fill_value='extrapolate')
+            self.line.set_data(self.x_dense, f(self.x_dense))
+            self._inflow_summary()
+        self.dragger = _DraggablePoints(ax, self.x_ctrl, self.y_ctrl, refresh)
+        lay.addWidget(self.canvas, 1)
+        form = W.QFormLayout()
+        self.hr = W.QDoubleSpinBox(); self.hr.setRange(20, 250); self.hr.setValue(70); self.hr.setSuffix(' bpm')
+        self.hr.valueChanged.connect(lambda *_: self._inflow_summary())
+        form.addRow('heart rate', self.hr)
+        self.peak = W.QDoubleSpinBox(); self.peak.setRange(1, 5000); self.peak.setValue(400); self.peak.setSuffix(' mL/s')
+        self.peak.valueChanged.connect(self._rescale_axis)
+        form.addRow('peak flow axis', self.peak)
+        self.npts = W.QSpinBox(); self.npts.setRange(50, 20000); self.npts.setValue(1200)
+        form.addRow('points per cycle', self.npts)
+        lay.addLayout(form)
+        row = W.QHBoxLayout()
+        load = W.QPushButton('Load .flow file…'); load.clicked.connect(self._load_inflow_file)
+        self.save_inflow_btn = W.QPushButton('Use this waveform'); self.save_inflow_btn.clicked.connect(self.save_inflow)
+        row.addWidget(load); row.addStretch(); row.addWidget(self.save_inflow_btn)
+        lay.addLayout(row)
+        self.inflow_info = W.QLabel(''); self.inflow_info.setWordWrap(True)
+        lay.addWidget(self.inflow_info)
+        self._next_button(lay)
+        self.tabs.addTab(page, '2  Inflow')
+
+    def _rescale_axis(self, v):
+        self.ax.set_ylim(-0.25 * v, 1.25 * v)
+        self.canvas.draw_idle()
+
+    def _inflow_summary(self):
+        t, q = self.waveform()
+        tz = getattr(np, 'trapezoid', None) or np.trapz
+        self.inflow_info.setText('cycle %.3f s · mean %.1f mL/s · peak %.1f mL/s · min %.1f mL/s' % (
+            t[-1], tz(q, t) / (t[-1] - t[0]), q.max(), q.min()))
+
+    def waveform(self):
+        from scipy.interpolate import interp1d
+        T = 60.0 / self.hr.value()
+        t = np.linspace(0.0, T, int(self.npts.value()))
+        f = interp1d(self.x_ctrl * T, self.y_ctrl, kind='quadratic', fill_value='extrapolate')
+        return t, f(t)
+
+    def _set_waveform(self, t, q):
+        T = t[-1] - t[0]
+        self.hr.setValue(round(60.0 / T, 1))
+        self.y_ctrl[:] = np.interp(self.x_ctrl, (t - t[0]) / T, q)
+        self.peak.setValue(max(float(np.abs(q).max()), 1.0))
+        self.dragger.pts.set_offsets(np.c_[self.x_ctrl, self.y_ctrl])
+        self.dragger.update()
+        self.canvas.draw_idle()
+
+    def _inflow_target(self) -> Path:
+        i = self.case.config.inflow
+        return self.case.resolve(i.file) if i.file else self.case.dir / 'input' / 'inflow.flow'
+
+    def _load_inflow_into_editor(self):
+        from ..io.inflow import read_inflow
+        f = self._inflow_target()
+        if f.exists():
+            t, q = read_inflow(f)
+            self._set_waveform(t, q)
+            self.inflow_info.setText('loaded %s' % f)
+        else:
+            self._inflow_summary()
+
+    def _load_inflow_file(self):
+        f, _ = self.W.QFileDialog.getOpenFileName(self.win, 'Inflow file', '', 'Flow files (*.flow *.txt *.csv *.dat)')
+        if f:
+            from ..io.inflow import read_inflow
+            t, q = read_inflow(f)
+            self._set_waveform(t, q)
+
+    def save_inflow(self):
+        from ..io.inflow import write_inflow
+        if self.case is None:
+            return self.error('create or open a case first')
+        t, q = self.waveform()
+        f = self._inflow_target()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        write_inflow(t, q, f)
+        self._inflow_summary()
+        self.status('saved %s' % f)
+        self.inflow_info.setText(self.inflow_info.text() + '<br>saved to %s' % f)
+        self.refresh_status()
+
+    # ------------------------------------------------------------ 3 targets
+    def _build_bc_tab(self):
+        W, QtCore = self.W, self.QtCore
+        page = W.QWidget()
+        lay = W.QVBoxLayout(page)
+        lay.addWidget(W.QLabel('<b>Caps</b> — click one in the 3D view or in the table. Name them, pick the inlet, share the flow.'))
+        self.table = W.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(['name', 'area [cm²]', 'inlet', 'flow %'])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.currentCellChanged.connect(lambda r, *_: self._select(r))
+        lay.addWidget(self.table)
+        row = W.QHBoxLayout()
+        self.total = W.QLabel()
+        row.addWidget(self.total); row.addStretch()
+        eq = W.QPushButton('Equal split'); eq.clicked.connect(self._equal_split); row.addWidget(eq)
+        ar = W.QPushButton('Split by area'); ar.setToolTip("share proportional to each outlet's cap area")
+        ar.clicked.connect(self._area_split); row.addWidget(ar)
+        lay.addLayout(row)
+        lay.addWidget(W.QLabel('<b>Pressure target</b>'))
+        grid = W.QFormLayout()
+        self.anchor = W.QComboBox(); grid.addRow('measured at', self.anchor)
+        self.sys = W.QDoubleSpinBox(); self.sys.setRange(1, 400); self.sys.setSuffix(' mmHg'); self.sys.setValue(120)
+        self.dia = W.QDoubleSpinBox(); self.dia.setRange(1, 400); self.dia.setSuffix(' mmHg'); self.dia.setValue(80)
+        grid.addRow('systolic', self.sys); grid.addRow('diastolic', self.dia)
+        mr = W.QHBoxLayout()
+        self.mean_on = W.QCheckBox('also target the mean')
+        self.mean = W.QDoubleSpinBox(); self.mean.setRange(1, 400); self.mean.setSuffix(' mmHg'); self.mean.setValue(93)
+        self.mean.setEnabled(False); self.mean_on.toggled.connect(self.mean.setEnabled)
+        mr.addWidget(self.mean_on); mr.addWidget(self.mean)
+        grid.addRow('mean', mr)
+        lay.addLayout(grid)
+        hint = W.QLabel('The pulse pressure at the inlet has a floor set by the inflow waveform and the vessel inertia; '
+                        'if a target is out of reach the tuner says so and keeps its best result.')
+        hint.setWordWrap(True); hint.setStyleSheet('color: gray'); lay.addWidget(hint)
+        self.bc_message = W.QLabel(''); self.bc_message.setWordWrap(True); lay.addWidget(self.bc_message)
+        row2 = W.QHBoxLayout(); row2.addStretch()
+        self.save_bc_btn = W.QPushButton('Save targets'); self.save_bc_btn.clicked.connect(self.save_bc)
+        row2.addWidget(self.save_bc_btn)
+        lay.addLayout(row2)
+        self._next_button(lay)
+        self.tabs.addTab(page, '3  Targets')
+        self.name_edits, self.split_boxes, self.inlet_buttons = [], [], []
+        self.inlet_group = None
+
+    def _fill_bc_form(self):
+        W = self.W
+        bc = self.case.config.boundary_conditions
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(self.caps))
+        self.name_edits, self.split_boxes, self.inlet_buttons = [], [], []
+        self.inlet_group = W.QButtonGroup(self.table)
+        for r, c in enumerate(self.caps):
+            name = W.QLineEdit(self.names[r]); name.textEdited.connect(self._names_changed)
+            self.name_edits.append(name); self.table.setCellWidget(r, 0, name)
+            area = W.QTableWidgetItem('%.4f' % c.area); area.setFlags(self.QtCore.Qt.ItemIsEnabled)
+            self.table.setItem(r, 1, area)
+            radio = W.QRadioButton(); radio.setChecked(r == self.inlet_row); radio.toggled.connect(self._inlet_changed)
+            self.inlet_group.addButton(radio, r); self.inlet_buttons.append(radio)
+            holder = W.QWidget(); h = W.QHBoxLayout(holder); h.setContentsMargins(0, 0, 0, 0)
+            h.addStretch(); h.addWidget(radio); h.addStretch()
+            self.table.setCellWidget(r, 2, holder)
+            box = W.QDoubleSpinBox(); box.setRange(0, 100); box.setDecimals(1); box.setSuffix(' %')
+            box.setValue(float(bc.flow_split.get(self.names[r], 0.0))); box.setEnabled(r != self.inlet_row)
+            box.valueChanged.connect(self._splits_changed)
+            self.split_boxes.append(box); self.table.setCellWidget(r, 3, box)
+        self.table.blockSignals(False)
+        p = bc.pressure_mmHg
+        self.sys.setValue(p.systolic); self.dia.setValue(p.diastolic)
+        self.mean_on.setChecked(p.mean is not None)
+        if p.mean is not None:
+            self.mean.setValue(p.mean)
+        self._anchor_items(p.at)
+        self._splits_changed()
+
+    def _outlet_rows(self):
+        return [r for r in range(len(self.caps)) if r != self.inlet_row]
+
+    def _anchor_items(self, current):
+        items = ['inlet'] + [self.names[r] for r in self._outlet_rows()]
+        self.anchor.blockSignals(True); self.anchor.clear(); self.anchor.addItems(items)
+        self.anchor.setCurrentIndex(items.index(current) if current in items else 0)
+        self.anchor.blockSignals(False)
+
+    def _select(self, row):
+        if row is None or row < 0 or row >= len(self.caps):
+            return
+        self.selected = row
+        self.viewer.highlight(self.caps, self.inlet_row, row)
+
+    def _picked(self, mesh):
+        c0 = np.asarray(mesh.center)
+        row = int(np.argmin([np.linalg.norm(c.centroid - c0) for c in self.caps]))
+        self.tabs.setCurrentIndex(2)
+        self.table.setCurrentCell(row, 0)
+        self._select(row)
+
+    def _inlet_changed(self, *_):
+        if self.inlet_group is None:
+            return
+        self.inlet_row = max(self.inlet_group.checkedId(), 0)
+        for r, box in enumerate(self.split_boxes):
+            box.setEnabled(r != self.inlet_row)
+        self._anchor_items(self.anchor.currentText())
+        self.viewer.labels(self.caps, self.names, self.inlet_row)
+        self.viewer.highlight(self.caps, self.inlet_row, self.selected)
+        self._splits_changed()
+
+    def _names_changed(self, *_):
+        self.names = [e.text().strip() for e in self.name_edits]
+        self._anchor_items(self.anchor.currentText())
+        self.viewer.labels(self.caps, self.names, self.inlet_row)
+        if self.viewer.plotter is not None:
+            self.viewer.plotter.render()
+
+    def _splits_changed(self, *_):
+        tot = sum(self.split_boxes[r].value() for r in self._outlet_rows()) if self.split_boxes else 0
+        ok = abs(tot - 100.0) < 0.05
+        self.total.setText('outlets total: <b>%.1f %%</b>%s' % (tot, '' if ok else '  (must be 100)'))
+        self.total.setStyleSheet('' if ok else 'color: #b3261e')
+
+    def _equal_split(self):
+        rows = self._outlet_rows()
+        for r in rows:
+            self.split_boxes[r].setValue(round(100.0 / len(rows), 1))
+        self._fix_rounding(rows)
+
+    def _area_split(self):
+        rows = self._outlet_rows()
+        tot = sum(self.caps[r].area for r in rows)
+        for r in rows:
+            self.split_boxes[r].setValue(round(100.0 * self.caps[r].area / tot, 1))
+        self._fix_rounding(rows)
+
+    def _fix_rounding(self, rows):
+        diff = 100.0 - sum(self.split_boxes[r].value() for r in rows)
+        if rows and abs(diff) > 1e-6:
+            big = max(rows, key=lambda r: self.split_boxes[r].value())
+            self.split_boxes[big].setValue(round(self.split_boxes[big].value() + diff, 1))
+
+    def bc_values(self):
+        names = [e.text().strip() for e in self.name_edits]
+        for n in names:
+            if not _NAME_RE.match(n):
+                raise ValueError("cap name %r: use letters, digits and underscores, starting with a letter" % n)
+        if len(set(names)) != len(names):
+            raise ValueError("cap names must be unique")
+        split = {names[r]: self.split_boxes[r].value() for r in self._outlet_rows()}
+        if abs(sum(split.values()) - 100.0) > 0.05:
+            raise ValueError("the outlet flow shares sum to %.1f %%, they must sum to 100" % sum(split.values()))
+        if any(v <= 0 for v in split.values()):
+            raise ValueError("every outlet needs a positive flow share")
+        if self.sys.value() <= self.dia.value():
+            raise ValueError("systolic must exceed diastolic")
+        mean = self.mean.value() if self.mean_on.isChecked() else None
+        if mean is not None and not (self.dia.value() < mean < self.sys.value()):
+            raise ValueError("the mean must lie between diastolic and systolic")
+        return dict(inlet=names[self.inlet_row], cap_names=names, flow_split=split,
+                    pressure=dict(at=self.anchor.currentText(), systolic=self.sys.value(),
+                                  diastolic=self.dia.value(), mean=mean))
+
+    def save_bc(self):
+        from ..config_edit import update_case_yaml
+        try:
+            v = self.bc_values()
+        except ValueError as e:
+            self.bc_message.setText('<span style="color:#b3261e">%s</span>' % e)
+            return
+        update_case_yaml(self.case.yaml, **v)
+        self.bc_message.setText('saved to %s' % self.case.yaml)
+        self.status('targets saved')
+        cur = self.tabs.currentIndex()
+        self.load_case(self.case.dir)
+        self.tabs.setCurrentIndex(cur)
+
+    # ------------------------------------------------------------ 4 run
+    def _build_run_tab(self):
+        W = self.W
+        page = W.QWidget()
+        lay = W.QVBoxLayout(page)
+        lay.addWidget(W.QLabel('<b>Run</b> — only stages whose inputs changed are executed.'))
+        self.stage_table = W.QTableWidget(len(STAGES), 3)
+        self.stage_table.setHorizontalHeaderLabels(['stage', 'state', 'detail'])
+        self.stage_table.verticalHeader().setVisible(False)
+        self.stage_table.horizontalHeader().setStretchLastSection(True)
+        for i, s in enumerate(STAGES):
+            self.stage_table.setItem(i, 0, W.QTableWidgetItem(s))
+            self.stage_table.setItem(i, 1, W.QTableWidgetItem(''))
+            self.stage_table.setItem(i, 2, W.QTableWidgetItem(''))
+        lay.addWidget(self.stage_table)
+        opts = W.QHBoxLayout()
+        self.run_1d = W.QCheckBox('1D simulation (OneDSolver)'); self.run_1d.setChecked(True)
+        self.run_1d.toggled.connect(lambda v: self._set_option('simulation.run_1d', bool(v)))
+        self.vol = W.QCheckBox('3D projection (volume mesh)')
+        self.vol.toggled.connect(lambda v: self._set_option('outputs.volume_projection', bool(v)))
+        opts.addWidget(self.run_1d); opts.addWidget(self.vol); opts.addStretch()
+        lay.addLayout(opts)
+        row = W.QHBoxLayout()
+        self.run_btn = W.QPushButton('▶ Run'); self.run_btn.clicked.connect(lambda: self.start_run(None, False))
+        self.from_combo = W.QComboBox(); self.from_combo.addItems(STAGES)
+        from_btn = W.QPushButton('Run from stage'); from_btn.clicked.connect(lambda: self.start_run(self.from_combo.currentText(), False))
+        force_btn = W.QPushButton('Force all'); force_btn.clicked.connect(lambda: self.start_run(None, True))
+        row.addWidget(self.run_btn); row.addWidget(self.from_combo); row.addWidget(from_btn); row.addWidget(force_btn); row.addStretch()
+        lay.addLayout(row)
+        self.log = W.QPlainTextEdit(); self.log.setReadOnly(True)
+        self.log.setFont(self.QtGui.QFont('monospace'))
+        self.log.setMaximumBlockCount(5000)
+        lay.addWidget(self.log, 1)
+        self.tabs.addTab(page, '4  Run')
+
+    def _set_option(self, key, value):
+        from ..config_edit import set_values
+        if self.case is None:
+            return
+        set_values(self.case.yaml, {key: value})
+        try:
+            from ..case import Case
+            self.case = Case(self.case.dir)
+        except Exception as e:
+            return self.error(str(e))
+        self.refresh_status()
+
+    def refresh_status(self):
+        if self.case is None:
+            return
+        from ..case import Case
+        try:
+            self.case = Case(self.case.dir)
+        except Exception as e:
+            return self.error(str(e))
+        s = self.case.config.simulation
+        self.run_1d.blockSignals(True); self.run_1d.setChecked(bool(s.run_1d)); self.run_1d.blockSignals(False)
+        self.vol.blockSignals(True); self.vol.setChecked(bool(self.case.config.outputs.volume_projection)); self.vol.blockSignals(False)
+        for i, (name, state, detail) in enumerate(self.case.status()):
+            self.stage_table.item(i, 1).setText(state)
+            self.stage_table.item(i, 2).setText(str(detail)[:90])
+
+    def _stage_event(self, stage, event):
+        i = STAGES.index(stage)
+        self.stage_table.item(i, 1).setText({'start': 'running…', 'done': 'done', 'fresh': 'fresh', 'skipped': 'skipped'}[event])
+
+    def start_run(self, from_stage, force):
+        if self.case is None:
+            return self.error('create or open a case first')
+        if self.worker is not None:
+            return
+        from qtpy import QtCore
+        self.log.clear()
+        self.run_btn.setEnabled(False)
+        self.tabs.setCurrentIndex(3)
+        em = _RunEmitter.make()
+        em.line.connect(self.log.appendPlainText)
+        em.stage.connect(self._stage_event)
+        em.done.connect(self._run_done)
+        self._emitter = em
+        case_dir = self.case.dir
+
+        class Worker(QtCore.QThread):
+            def run(w):
+                try:
+                    run_case_blocking(case_dir, from_stage, force, em.line.emit, em.stage.emit)
+                    em.done.emit(True, '')
+                except Exception:
+                    em.done.emit(False, traceback.format_exc())
+        self.worker = Worker()
+        self.worker.start()
+
+    def _run_done(self, ok, err):
+        self.worker = None
+        self.run_btn.setEnabled(True)
+        self.refresh_status()
+        if ok:
+            self.status('run finished')
+            self._fill_results()
+            self.tabs.setCurrentIndex(4)
+        else:
+            self.log.appendPlainText(err)
+            self.error('the run failed; see the log')
+
+    # ------------------------------------------------------------ 5 results
+    def _build_results_tab(self):
+        W = self.W
+        page = W.QWidget()
+        lay = W.QVBoxLayout(page)
+        row = W.QHBoxLayout()
+        for label, fn in [('Caps', self._show_caps), ('1D pressure', lambda: self._show_1d('pressure_mmHg')),
+                          ('1D flow', lambda: self._show_1d('flow')), ('Cycle mean', self.viewer.show_mean_results)]:
+            b = W.QPushButton(label); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        openb = W.QPushButton('Open results folder'); openb.clicked.connect(self._open_results); row.addWidget(openb)
+        lay.addLayout(row)
+        self.tune_info = W.QLabel(''); self.tune_info.setWordWrap(True); lay.addWidget(self.tune_info)
+        self.res_table = W.QTableWidget(0, 5)
+        self.res_table.setHorizontalHeaderLabels(['outlet', 'split %', 'sys', 'dia', 'mean [mmHg]'])
+        self.res_table.verticalHeader().setVisible(False)
+        self.res_table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.res_table)
+        self.plot_label = W.QLabel(''); self.plot_label.setAlignment(self.QtCore.Qt.AlignTop)
+        scroll = W.QScrollArea(); scroll.setWidget(self.plot_label); scroll.setWidgetResizable(True)
+        lay.addWidget(scroll, 1)
+        self.tabs.addTab(page, '5  Results')
+
+    def _show_caps(self):
+        if self.surf is not None:
+            self.viewer.show_model(self.surf, self.caps, self.names, self.inlet_row, self.selected, pick_callback=self._picked)
+
+    def _show_1d(self, quantity):
+        f = self.case.results_1d / 'extracted_results.vtp' if self.case else None
+        if f is None or not f.exists():
+            return self.error('no 1D results yet (run with the 1D simulation enabled)')
+        try:
+            self.viewer.show_results(f, quantity, surf=self.surf)
+        except Exception as e:
+            self.error(str(e))
+
+    def _open_results(self):
+        if self.case is not None:
+            from qtpy import QtGui, QtCore
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self.case.results)))
+
+    def _fill_results(self):
+        if self.case is None:
+            return
+        rep = self.case.tuning_report
+        if rep.exists():
+            r = json.loads(rep.read_text())
+            a = r.get('achieved', {}).get('pressure') or {}
+            t = r.get('targets', {})
+            txt = '<b>Tuning:</b> %s in %d solves — at %s achieved %.0f/%.0f (mean %.0f) vs target %g/%g' % (
+                'converged' if r.get('converged') else 'stopped (%s)' % r.get('stop_reason', ''), r.get('solves', 0),
+                t.get('at', ''), a.get('systolic', 0), a.get('diastolic', 0), a.get('mean', 0),
+                t.get('systolic', 0), t.get('diastolic', 0))
+            if r.get('note'):
+                txt += '<br><span style="color:#9a6700">%s</span>' % r['note']
+            self.tune_info.setText(txt)
+        else:
+            self.tune_info.setText('')
+        stats = self.case.results_0d / '0D_statistics.csv'
+        self.res_table.setRowCount(0)
+        if stats.exists():
+            import pandas as pd
+            df = pd.read_csv(stats)
+            self.res_table.setRowCount(len(df))
+            for i, row in df.iterrows():
+                for j, v in enumerate([row['outlet'], '%.1f' % row['flow_split_pct'], '%.1f' % row['systolic_mmHg'],
+                                       '%.1f' % row['diastolic_mmHg'], '%.1f' % row['mean_pressure_mmHg']]):
+                    self.res_table.setItem(i, j, self.W.QTableWidgetItem(str(v)))
+        png = self.case.results_0d / '0D_outlets.png'
+        if png.exists() and not self.offscreen:
+            pix = self.QtGui.QPixmap(str(png))
+            self.plot_label.setPixmap(pix.scaledToWidth(max(self.plot_label.width(), 500), self.QtCore.Qt.SmoothTransformation))
+        else:
+            self.plot_label.setText('')
+
+    def show(self):
+        self.win.show()
+
+
+def run_app(case_dir=None, start_tab: int = 0) -> int:
+    _require_qt()
+    from qtpy import QtWidgets
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    w = MainWindow(case_dir, start_tab=start_tab)
+    w.show()
+    return app.exec_() if hasattr(app, 'exec_') else app.exec()

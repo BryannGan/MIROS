@@ -57,3 +57,21 @@ def update_case_yaml(path, *, inlet: Optional[str] = None, cap_names: Optional[S
 
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         y.dump(data, f)
+
+
+def set_values(path, values: Dict[str, object]) -> None:
+    """Set dotted keys, e.g. {'simulation.run_1d': False, 'model.units': 'mm'}, keeping comments."""
+    path = Path(path)
+    y = _yaml()
+    with open(path, 'r', encoding='utf-8') as f:
+        data = y.load(f) or CommentedMap()
+    for dotted, value in values.items():
+        node = data
+        keys = dotted.split('.')
+        for k in keys[:-1]:
+            if not isinstance(node.get(k), CommentedMap):
+                node[k] = CommentedMap()
+            node = node[k]
+        node[keys[-1]] = value
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        y.dump(data, f)

@@ -51,35 +51,74 @@ def test_draggable_points_respond_to_pick_and_motion():
     plt.close(fig)
 
 
-@pytest.mark.slow
-def test_setup_window_form_saves_case(surface_path, tmp_path):
+@pytest.fixture
+def qt_app():
     pytest.importorskip('qtpy')
     pytest.importorskip('pyvistaqt')
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     from qtpy import QtWidgets
-    from miros.cli import main
-    from miros.ui.setup_window import SetupWindow
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-    d = tmp_path / 'c'
-    assert main(['init', str(d), '--surface', str(surface_path)]) == 0
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    w = SetupWindow(d, offscreen=True)
-    assert len(w.caps) == 6
+
+@pytest.mark.slow
+def test_app_create_case_targets_and_inflow(surface_path, tmp_path, qt_app):
+    """The window (without the 3D view) creates a case from a surface, saves targets and an inflow."""
+    from miros.ui.app import MainWindow
+
+    w = MainWindow(offscreen=True)
+    w.surface_edit.setText(str(surface_path))
+    w.case_edit.setText(str(tmp_path / 'c'))
+    w.units.setCurrentText('cm')
+    w.create_case()
+    assert w.case is not None and len(w.caps) == 6 and (tmp_path / 'c' / 'case.yaml').exists()
+
+    # targets
     w.name_edits[0].setText('root'); w._names_changed()
-    w._equal_split()
-    assert 'must be 100' not in w.total.text()
     w.inlet_buttons[1].setChecked(True)                      # second-largest cap becomes the inlet
     w._equal_split()
+    assert 'must be 100' not in w.total.text()
     w.anchor.setCurrentText('inlet')
     w.sys.setValue(125); w.dia.setValue(78)
-    w.save()
-    assert 'saved' in w.message.text()
-    cfg = load_config(d / 'case.yaml')
+    w.save_bc()
+    assert 'saved' in w.bc_message.text(), w.bc_message.text()
+    cfg = load_config(tmp_path / 'c' / 'case.yaml')
     assert cfg.model.inlet == 'cap_2' and cfg.model.cap_names[0] == 'root'
     assert 'cap_2' not in cfg.boundary_conditions.flow_split and 'root' in cfg.boundary_conditions.flow_split
     assert abs(sum(cfg.boundary_conditions.flow_split.values()) - 100) < 0.1
     assert cfg.boundary_conditions.pressure_mmHg.systolic == 125
-    # invalid state is refused
     w.split_boxes[0].setValue(5)
-    w.save()
-    assert 'must sum to 100' in w.message.text()
+    w.save_bc()
+    assert 'must sum to 100' in w.bc_message.text()
+
+    # inflow from the embedded editor
+    w.hr.setValue(75); w.npts.setValue(600)
+    w.y_ctrl[:] = 100 * np.sin(np.pi * w.x_ctrl) ** 2
+    w.save_inflow()
+    f = tmp_path / 'c' / 'input' / 'inflow.flow'
+    assert f.exists()
+    t = np.loadtxt(f)
+    assert t.shape == (600, 2) and abs(t[-1, 0] - 0.8) < 1e-6
+    states = dict((s, st) for s, st, _ in w.case.status())
+    assert states['preprocess'] == 'never'
+
+
+@pytest.mark.slow
+def test_app_runs_preprocess_in_worker(surface_path, tmp_path, qt_app):
+    from miros.ui.app import MainWindow, run_case_blocking
+    from miros.cli import main
+    d = tmp_path / 'c'
+    assert main(['init', str(d), '--surface', str(surface_path)]) == 0
+    lines, events = [], []
+    from miros.case import Case
+    # the worker body, synchronously, limited to the first stage
+    import contextlib
+    from miros.ui.app import _LineWriter
+    w = _LineWriter(lines.append)
+    with contextlib.redirect_stdout(w):
+        Case(d).run(until='preprocess', progress=lambda s, e: events.append((s, e)))
+    w.flush()
+    assert ('preprocess', 'start') in events and ('preprocess', 'done') in events
+    assert any('preprocess' in l for l in lines)
+    win = MainWindow(d, offscreen=True)
+    win.refresh_status()
+    assert win.stage_table.item(0, 1).text() == 'fresh'

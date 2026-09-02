@@ -66,6 +66,23 @@ miros doctor                                                # checks packages an
 
 Linux, macOS and Windows use the same code path; there is nothing to configure per OS.
 
+## The window
+
+```bash
+miros gui                 # start from a clipped surface
+miros gui ~/cases/patient01   # or open a case
+```
+
+One window, the 3D model always on the left, the workflow as steps on the right:
+**1 Model** (pick the surface, units, create the case) → **2 Inflow** (draw one cardiac cycle on
+the embedded editor, or load a file) → **3 Targets** (click a cap in 3D or in the table to
+select it; name it, mark the inlet, type its flow share; pressure anchor and targets; Save) →
+**4 Run** (stages with their state, a live log; only stale stages run) → **5 Results**
+(per-outlet numbers, the 0D plot, and 1D pressure or flow painted onto the vessels with a time
+slider). Needs the GUI extra: `pip install "miros[gui]"`.
+
+Everything the window does is also a command, below.
+
 ## Quick start: the example
 
 ```bash
@@ -191,7 +208,8 @@ outlet (`pressure_mmHg.at: cap_2`), use a smoother waveform, or accept the value
 | `miros init DIR [--surface S] [--inflow F] [--units mm] [--inlet NAME]` | creates `DIR/case.yaml` with the detected caps |
 | `miros run DIR [--from STAGE] [--until STAGE] [--force]` | runs stale stages; `--from` re-runs from a stage onward |
 | `miros status DIR` | fresh / stale / never per stage, with the reason |
-| `miros setup DIR` | 3D view + form: cap names, inlet, flow shares, pressure anchor and targets → `case.yaml` (needs `miros[gui]`) |
+| `miros gui [DIR]` | the whole workflow in one window: model, inflow, targets, run, results (needs `miros[gui]`) |
+| `miros setup DIR` | the same window opened on the Targets step |
 | `miros show caps DIR` | read-only 3D view of the surface with labelled caps |
 | `miros inflow edit DIR` | draw the inflow waveform; saved to `inflow.file` and picked up by the next run |
 

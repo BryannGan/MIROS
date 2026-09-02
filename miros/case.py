@@ -104,8 +104,12 @@ class Case:
         return rows
 
     def run(self, from_stage: Optional[str] = None, until: Optional[str] = None, force: bool = False,
-            only: Optional[Sequence[str]] = None) -> List[str]:
-        """Run stale stages in order; returns the names of the stages that ran."""
+            only: Optional[Sequence[str]] = None, progress=None) -> List[str]:
+        """
+        Run stale stages in order; returns the names of the stages that ran.
+        progress(stage, event) is called with event in {'start', 'done', 'fresh', 'skipped'}.
+        """
+        notify = progress or (lambda *a: None)
         names = [s.name for s in self.stages()]
         for s in (from_stage, until):
             if s is not None and s not in names:
@@ -120,6 +124,7 @@ class Case:
                 continue
             if not st.enabled(self):
                 console.info("%-12s skipped (%s)" % (st.name, st.disabled_reason(self)))
+                notify(st.name, 'skipped')
                 continue
             try:
                 inputs = st.inputs(self)
@@ -129,11 +134,14 @@ class Case:
             must = force or (i_from is not None and i >= i_from) or state != 'fresh'
             if not must:
                 console.info("%-12s up to date (%s)" % (st.name, reason))
+                notify(st.name, 'fresh')
                 continue
             console.section("%s  (%s)" % (st.name, 'forced' if (force or i_from is not None) else reason))
+            notify(st.name, 'start')
             t0 = time.time()
             outputs = st.run(self)
             self.manifest.record(st.name, inputs, [str(o) for o in outputs], extra={'seconds': round(time.time() - t0, 1)})
             console.ok("%s done in %.1f s" % (st.name, time.time() - t0))
+            notify(st.name, 'done')
             ran.append(st.name)
         return ran

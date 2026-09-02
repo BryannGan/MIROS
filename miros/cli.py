@@ -5,7 +5,8 @@ miros — command line.
     miros init DIR [--surface ...]   write a case.yaml (with detected caps)
     miros run DIR [--from S] [--until S] [--force]
     miros status DIR
-    miros setup DIR                  3D view + form: caps, inlet, flow splits, pressure targets
+    miros gui [DIR]                  the whole workflow in one window: model, inflow, targets, run, results
+    miros setup DIR                  the same window opened on the Targets step
     miros show caps DIR              labelled caps in a 3D window (read-only)
     miros inflow edit DIR            draw the inflow waveform
 """
@@ -129,6 +130,15 @@ def cmd_show(args):
     return 0
 
 
+def cmd_gui(args):
+    from .ui.app import run_app
+    try:
+        return run_app(args.dir)
+    except RuntimeError as e:
+        console.error(str(e))
+        return 1
+
+
 def cmd_setup(args):
     from .ui.setup_window import run_setup
     try:
@@ -188,7 +198,11 @@ def main(argv=None):
     p.add_argument('dir')
     p.set_defaults(fn=cmd_status)
 
-    p = sub.add_parser('setup', help='3D view + form: name caps, choose the inlet, flow splits, pressure targets')
+    p = sub.add_parser('gui', help='the whole workflow in one window (3D view + steps)')
+    p.add_argument('dir', nargs='?', default=None, help='case folder to open (optional)')
+    p.set_defaults(fn=cmd_gui)
+
+    p = sub.add_parser('setup', help='the window opened on the Targets step: caps, inlet, flow splits, pressure')
     p.add_argument('dir')
     p.set_defaults(fn=cmd_setup)
 
