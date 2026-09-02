@@ -16,11 +16,8 @@ def test_no_simvascular_module_is_imported():
     assert not any(m == 'sv' or m.startswith('sv.') for m in sys.modules)
 
 
-def test_build_and_solve(surface_path, tmp_path):
-    inflow = surface_path.parent / 'inflow_1d.flow'
-    if not inflow.exists():
-        pytest.skip("inflow file missing")
-    r = build_rom_model(surface_path, tmp_path, inflow, settings=RomSettings(cycles=2), verbose=False)
+def test_build_and_solve(surface_path, inflow_path, tmp_path):
+    r = build_rom_model(surface_path, tmp_path, inflow_path, settings=RomSettings(cycles=2), verbose=False)
     assert r.zerod_json.exists() and r.oned_input.exists() and r.centerlines.exists()
     assert len(r.outlet_names) == 5 and r.inlet_name not in r.outlet_names
     assert (r.boundary_dir / 'inlet.vtp').exists() and (r.boundary_dir / 'wall.vtp').exists()
@@ -31,10 +28,7 @@ def test_build_and_solve(surface_path, tmp_path):
     assert len(res['name']) > 0 and np.isfinite(np.asarray(res['pressure_in'])).all()
 
 
-def test_onedsolver_runs_on_builtin_model(surface_path, onedsolver, tmp_path):
-    inflow = surface_path.parent / 'inflow_1d.flow'
-    if not inflow.exists():
-        pytest.skip("inflow file missing")
-    r = build_rom_model(surface_path, tmp_path, inflow, settings=RomSettings(cycles=1), write_0d=False, verbose=False)
+def test_onedsolver_runs_on_builtin_model(surface_path, inflow_path, onedsolver, tmp_path):
+    r = build_rom_model(surface_path, tmp_path, inflow_path, settings=RomSettings(cycles=1), write_0d=False, verbose=False)
     run_onedsolver(onedsolver, r.oned_input, tmp_path / '1D_results')
     assert len(result_files(tmp_path / '1D_results')) >= 5

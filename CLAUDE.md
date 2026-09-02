@@ -1,92 +1,53 @@
 # MIROS - Project Context
 
-## Overview
-**MIROS** (Medical Image to Patient-Specific Reduced-Order Hemodynamic Model Simulation in Minutes) is a Python pipeline that converts medical imaging data into patient-specific blood flow simulations using SimVascular.
+**MIROS** turns a vessel surface (SeqSeg output, clipped open) into patient-specific 0D and 1D
+hemodynamic simulations. Standalone: no SimVascular installation; only `pysvzerod` (pip from git)
+and the `svOneDSolver` executable are external. One code path for Linux / macOS / Windows.
 
-## Architecture
+## Entry points
 
-### Entry Point
 ```bash
-python -m package
+miros doctor                       # packages + OneDSolver discovery
+miros init DIR --surface S --inflow F
+miros run DIR [--from STAGE] [--until STAGE] [--force]
+miros status DIR
+miros show caps DIR / miros inflow edit DIR   # need a display
+python -m miros ...                # same thing without the console script
 ```
 
-### Core Modules (`package/`)
+Dev env on this machine: conda `MIROS` (`/home/bg2881/miniconda3/envs/MIROS`), package installed
+editable (`pip install -e .`). OneDSolver at `/usr/local/sv/oneDSolver/2025-07-02/bin/OneDSolver`.
 
-| Module | Purpose |
-|--------|---------|
-| `__init__.py` | Configuration: paths, solvers, OS detection, mesh params, BC tuning params |
-| `__main__.py` | Main orchestrator with 4 execution modes |
-| `sv_preprocess.py` | Surface remeshing, volume mesh gen, boundary extraction |
-| `gen_inflow.py` | Interactive GUI for cardiac inflow waveform design |
-| `tune_bc.py` | **NEW**: Automatic RCR boundary condition optimization |
-| `gen_params_cl_run_1D.py` | 1D simulation setup (centerlines, mesh, OneDSolver) |
-| `gen_params0D.py` | 0D simulation setup |
-| `run_0D.py` | 0D solver execution via pysvzerod |
-| `extract_1d_res.py` | 1D result extraction (CSV, VTP, VTU) |
-| `extract_0d_res.py` | 0D result extraction and statistics |
-| `helper_func.py` | Shared utilities (mesh ops, config, solver execution) |
-| `post_process_seqseg.py` | Optional automatic outlet clipping |
+## Layout
 
-## Workflow Pipeline
+| Path | Purpose |
+|---|---|
+| `miros/config.py` | `case.yaml` schema (dataclasses), strict loader with type coercion, template |
+| `miros/case.py`, `miros/manifest.py` | case directory, stage runner, content-hash manifest (`.miros/manifest.json`) |
+| `miros/stages/*.py` | one module per stage: `inputs(case)`, `outputs(case)`, `run(case)`, optional `enabled` |
+| `miros/geometry/` | `caps.py` (boundary loops → caps), `centerlines.py` (Voronoi + Dijkstra), `centerline_tree.py` (annotation in the layout `rom/mesh.py` reads), `remesh.py` (pyacvd), `volume.py` (tetgen), `clip.py` (plane clipping) |
+| `miros/rom/`, `miros/rom_extract/` | vendored SimVascular `sv_rom_simulation` / `sv_rom_extract_results`; see `VENDORED.md` in each |
+| `miros/rom_model.py` | `build_rom_model()`: surface → caps → centerlines → 0D JSON / 1D input |
+| `miros/tuning/windkessel.py` | analytic Windkessel init + fixed-point RCR tuning |
+| `miros/io/` | the only readers/writers for `rcrt.dat`, `.flow`, 0D JSON, OneDSolver runs |
+| `miros/ui/` | console output (rich, plain fallback), matplotlib waveform editor |
+| `examples/aorta/` | runnable example (`case.yaml`, surface, inflow) + `reference/` from SimVascular for the validation tests |
+| `tests/unit`, `tests/integration` | `pytest`; integration tests are `slow`, skip without solvers |
 
-### Run Modes (select at startup)
-- **[1] Full workflow with manual BC**: User provides rcrt.dat file
-- **[2] Full workflow with automatic BC tuning**: Optimize BCs from targets (NEW)
-- **[3] Extract 1D results only**: Skip to 1D result extraction
-- **[4] Extract 0D results only**: Skip to 0D result extraction
+Case directory: `case.yaml`, `work/` (intermediate files), `results/0D`, `results/1D`, `.miros/`.
+`work/`, `results/`, `.miros/` are gitignored everywhere.
 
-### Full Workflow Steps
-1. **Input**: `clipped_seqseg_results.vtp` (surface mesh from SeqSeg)
-2. **Preprocess**: Remesh surface → volume mesh → extract boundaries
-3. **Inflow Design**: Design cardiac flow waveform via interactive GUI
-4. **Boundary Conditions**:
-   - Mode 1: Edit `rcrt.dat` manually
-   - Mode 2: Automatic tuning from flow splits + target pressures
-5. **0D Sim**: Run svZeroDSolver (fast validation of BCs)
-6. **0D Extract**: Generate 0D results and statistics
-7. **1D Sim**: Extract centerlines → run OneDSolver
-8. **1D Extract**: Generate CSV, VTP, VTU outputs
+## Conventions
 
-**Note**: 0D runs before 1D because BC tuning uses 0D for optimization, and 0D is fast for validating BCs before the longer 1D run.
+- Every stage declares its inputs (file hashes + config sections) so the manifest can decide staleness; when adding a stage, register it in `miros/stages/__init__.py` in pipeline order.
+- Outlet ↔ vessel mapping always comes from the 0D JSON (`io/zerod.VesselMap`), never from vessel names or sort order.
+- Units: geometry in cm, flow mL/s, pressure dyn/cm² internally, mmHg at every user-facing point (`io/zerod.MMHG_TO_CGS`).
+- File formats live in `miros/io`; nothing else hand-writes `rcrt.dat` or the inflow file.
+- Do not add SimVascular, vmtk, or conda-only dependencies; everything must be pip-installable on all three OSes.
+- `python -m pytest tests/unit -q` before committing; the full suite (`pytest`) takes ~2 minutes with OneDSolver present.
 
-### Automatic BC Tuning (Mode 2)
-User provides:
-- Flow split ratios (e.g., 25:25:25:25 across 4 outlets)
-- Reference outlet for pressure targeting
-- Target pressures: systolic (max), diastolic (min), mean in mmHg
+## Plan and history
 
-System optimizes RCR parameters using fast 0D solver iterations.
-
-## Key Files
-
-| File | Description |
-|------|-------------|
-| `rcrt.dat` | RCR boundary conditions (user-edited) |
-| `inflow_1d.flow` | Cardiac inflow waveform |
-| `params_1D.dat` / `params_0D.dat` | Solver parameters |
-| `extracted_centerlines.vtp` | Vessel centerlines |
-| `1D_results/` | Flow, pressure, area results |
-| `0D_results/` | Lumped-parameter results |
-
-## Dependencies
-
-- **SimVascular 2025-06-21+** with OneDSolver and svZeroDSolver
-  - SimVascular Python packages: `/usr/local/sv/simvascular/2025-06-21/Python3.11/site-packages`
-  - Key packages: `sv_rom_simulation`, `sv_auto_lv_modeling`
-- **Python**: numpy, scipy, pandas, matplotlib, vtk, pyvista
-- **SimVascular Python**: sv, sv_rom_simulation, sv_auto_lv_modeling, pysvzerod
-
-## Platform Support
-- **Windows**: Uses `sv.bat` wrapper
-- **Linux/macOS**: Direct SimVascular Python binary
-
-## Test Data
-- `test_windows/` - Windows test files
-- `test_Linux_Mac/` - Linux/macOS test files
-
-## Key Technical Details
-- **1D Solver**: Solves 1D Navier-Stokes along vessel centerlines
-- **0D Solver**: Lumped-parameter circuit model
-- **Material Model**: Olufsen nonlinear elastic (vessel walls)
-- **Boundary Conditions**: RCR (Windkessel) model at outlets
-- **Adaptive Features**: Auto edge size, mesh refinement on failure
+The refactor plan (findings, design, phases) is published as an artifact linked from the
+project memory. Phases 0–2 and the tuner core are done; next are the interactive outlet editor
+(`miros clip`), a second example of different topology, and PyPI packaging.

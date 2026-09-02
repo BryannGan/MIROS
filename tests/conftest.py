@@ -7,36 +7,45 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-TEST_CASE = ROOT / 'test_Linux_Mac'
-SURFACE = TEST_CASE / 'clipped_seqseg_results.vtp'
-INFLOW = TEST_CASE / 'inflow_1d.flow'
-SV_CENTERLINES = TEST_CASE / 'extracted_centerlines.vtp'      # SimVascular reference (generated, not tracked)
-SV_CAPS = TEST_CASE / 'caps_and_wall'
-SV_ZEROD = TEST_CASE / '0D_solver_input.json'
+EXAMPLE = ROOT / 'examples' / 'aorta'
+SURFACE = EXAMPLE / 'clipped_seqseg_results.vtp'
+INFLOW = EXAMPLE / 'inflow.flow'
+REFERENCE = EXAMPLE / 'reference'
 ONEDSOLVER = os.environ.get('MIROS_ONEDSOLVER', '/usr/local/sv/oneDSolver/2025-07-02/bin/OneDSolver')
 
 
 @pytest.fixture(scope='session')
 def surface_path():
     if not SURFACE.exists():
-        pytest.skip("test surface not present: %s" % SURFACE)
+        pytest.skip("example surface not present: %s" % SURFACE)
     return SURFACE
 
 
 @pytest.fixture(scope='session')
+def inflow_path():
+    if not INFLOW.exists():
+        pytest.skip("example inflow not present: %s" % INFLOW)
+    return INFLOW
+
+
+@pytest.fixture(scope='session')
 def sv_reference():
-    """Paths of the SimVascular-generated reference files, or skip."""
-    for p in (SV_CENTERLINES, SV_CAPS, SV_ZEROD, INFLOW):
+    """SimVascular-generated reference files for the validation gate, or skip."""
+    files = dict(centerlines=REFERENCE / 'extracted_centerlines.vtp', zerod=REFERENCE / '0D_solver_input.json',
+                 rcrt=REFERENCE / 'rcrt.dat', caps=REFERENCE / 'caps.json', inflow=INFLOW)
+    for p in files.values():
         if not p.exists():
             pytest.skip("SimVascular reference file missing: %s" % p)
-    return dict(centerlines=SV_CENTERLINES, caps=SV_CAPS, zerod=SV_ZEROD, inflow=INFLOW)
+    return files
 
 
 @pytest.fixture(scope='session')
 def onedsolver():
-    if not Path(ONEDSOLVER).exists():
+    from miros.solvers import find_onedsolver
+    exe = find_onedsolver(ONEDSOLVER if Path(ONEDSOLVER).exists() else None)
+    if exe is None:
         pytest.skip("OneDSolver not found (set MIROS_ONEDSOLVER)")
-    return ONEDSOLVER
+    return exe
 
 
 def pytest_configure(config):

@@ -63,13 +63,11 @@ def test_fill_small_loops_removes_single_missing_triangle():
 
 @pytest.mark.slow
 def test_caps_match_simvascular_on_test_case(surface_path, sv_reference):
+    import json
     surf = C.read_polydata(surface_path)
     caps = C.make_caps(surf)
     assert len(caps) == 6
-    sv = {}
-    for f in sv_reference['caps'].glob('*.vtp'):
-        if f.stem != 'wall':
-            p = pv.read(str(f)); sv[f.stem] = (p.points.mean(axis=0), p.area)
+    sv = {k: (np.asarray(v['centroid']), v['area']) for k, v in json.loads(sv_reference['caps'].read_text()).items()}
     for c in caps:
         name = min(sv, key=lambda k: np.linalg.norm(sv[k][0] - c.centroid))
         # SimVascular centroids are means of unevenly triangulated cap meshes, not area centroids

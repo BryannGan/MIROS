@@ -1,34 +1,21 @@
-# Byte‑compiled / caches
+# Byte-compiled / caches
 **/__pycache__/
 *.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
 
+# Case working data (anything MIROS generates next to a case.yaml)
+**/work/
+**/results/
+**/.miros/
 
-
-# VTK outputs and data
-*.vtp
-!test_windows/*.vtp
-!test_Linux_Mac/*.vtp
-*.flow
-*.in
-*.dat
+# Local scratch from the old pipeline and ad-hoc runs (not tracked)
+test_Linux_Mac/
+test_windows/
 res_from_seqseg/
 sv_project/
 tests_from_before/
 test/
-
-# Generated pipeline outputs (simulation results, meshes)
-0D_results/
-1D_results/
-mesh-complete/
-0D_solver_input.json
-model_info.txt
-test_Linux_Mac/remeshed_model.vtp
-test_Linux_Mac/extracted_centerlines.vtp
-test_Linux_Mac/1d_model.vtp
-optimization_testing/results/
-
-# build / test artefacts
-*.egg-info/
-.pytest_cache/
-build/
-dist/
+cases/

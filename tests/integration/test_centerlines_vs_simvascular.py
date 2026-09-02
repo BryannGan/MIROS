@@ -44,8 +44,7 @@ def _path_lengths(cl):
 def built(surface_path, sv_reference, tmp_path_factory):
     surf = C.read_polydata(surface_path)
     caps = C.make_caps(surf)
-    sv_caps = {f.stem: pv.read(str(f)).points.mean(axis=0)
-               for f in sv_reference['caps'].glob('*.vtp') if f.stem != 'wall'}
+    sv_caps = {k: np.asarray(v['centroid']) for k, v in json.loads(sv_reference['caps'].read_text()).items()}
     for c in caps:                                   # name caps as SimVascular did
         name = min(sv_caps, key=lambda k: np.linalg.norm(sv_caps[k] - c.centroid))
         c.name, c.is_inlet = name, (name == 'inlet')
@@ -97,13 +96,12 @@ def test_zerod_model_reproduces_simvascular_flow_splits(built, sv_reference):
     pysvzerod = pytest.importorskip('pysvzerod')
     import pandas as pd
     out = built['out']
-    rcrt = sv_reference['caps'].parent / 'rcrt.dat'
-    if not rcrt.exists():
-        pytest.skip("rcrt.dat missing")
+    rcrt = sv_reference['rcrt']
     names = built['tree'].outlet_names
     (out / 'centerlines_outlets.dat').write_text('\n'.join(names) + '\n')
+    C.write_boundary_dir(built['surf'], built['order'], out / 'caps_and_wall')
     P = Parameters()
-    P.output_directory = str(out); P.boundary_surfaces_dir = str(sv_reference['caps'])
+    P.output_directory = str(out); P.boundary_surfaces_dir = str(out / 'caps_and_wall')
     P.inlet_face_input_file = 'inlet.vtp'; P.inflow_input_file = str(sv_reference['inflow'])
     P.solver_output_file = 'builtin_0D.json'; P.model_name = 'test'; P.outflow_bc_type = 'rcr'; P.uniform_bc = False
     P.seg_size_adaptive = False; P.seg_min_num = 4; P.outlet_face_names_file = str(out / 'centerlines_outlets.dat')

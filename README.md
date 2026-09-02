@@ -2,531 +2,240 @@
 
 **Medical Image to Patient-Specific Reduced-Order Hemodynamic Model Simulation in Minutes**
 
-We present a streamlined process to produce reduced-order model (ROM) simulations of patient-specific hemodynamics directly from volumetric angiography. Our framework integrates recent lumped-parameter and 1D Navier–Stokes solvers in the open-source SimVascular software with recent machine learning based segmentation techniques of SeqSeg (DOI: 10.1007/s10439-024-03611-z). The result is a workflow that reduces the time and interaction needed to go from medical images to informative simulations of blood flow. Namely, patient-specific simulation results can be achieved in the order of minutes from medical image data and basic parameterizations. 
+MIROS turns a vessel surface segmented from volumetric angiography (for example with
+[SeqSeg](https://github.com/numisveinsson/SeqSeg)) into patient-specific 0D and 1D blood-flow
+simulations: it computes the centerlines, builds the reduced-order models, tunes the outlet
+boundary conditions to the flow distribution and pressures you specify, runs the
+[svZeroDSolver](https://github.com/simvascular/svZeroDSolver) and
+[svOneDSolver](https://github.com/SimVascular/svOneDSolver) solvers, and extracts the results —
+from one command, with every input in one file.
 
-*(Manuscript in preparation)*
+*(Manuscript in preparation.)*
 
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Workflow Overview](#workflow-overview)
-- [Input/Output Files](#inputoutput-files)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+```
+$ miros run examples/aorta
+```
 
 ---
 
-## Features
+## What it does
 
-- Automated pipeline from medical images to hemodynamic simulations
-- **NEW: Automatic boundary condition tuning** - Interactively specify target blood flow distribution and pressure values, and let the optimizer find the optimal parameters
-- 1D Navier-Stokes blood flow simulation along vessel centerlines
-- 0D lumped-parameter simulations at vessel outlets
-- Interactive GUI for cardiac inflow waveform design
-- Automatic adaptive mesh generation
-- Cross-platform support (Windows, Linux, macOS)
-- Comprehensive result extraction and visualization
-- Optional automatic outlet definition from SeqSeg output
+```
+surface, clipped open at the inlet and outlets
+   │  preprocess   caps (area, centroid, normal), unit conversion, optional remesh
+   │  inflow       one cardiac cycle from a file or the interactive editor
+   │  rom_model    centerlines (Voronoi medial axis + shortest paths), 0D model
+   │  tune         RCR boundary conditions from flow splits + pressure targets
+   │  sim_0d       svZeroDSolver
+   │  extract_0d   per-outlet statistics and plots
+   │  sim_1d       1D model + svOneDSolver
+   │  extract_1d   last-cycle CSV / VTP (/ VTU) with pressures in mmHg
+   ▼
+results/0D, results/1D
+```
 
----
+MIROS does not need a SimVascular installation. The reduced-order model builder from SimVascular
+is vendored (see `miros/rom/VENDORED.md`); centerlines, caps, remeshing and volume meshing are
+implemented on VTK, SciPy, pyacvd and tetgen.
 
-## Prerequisites
+## Requirements
 
-Before installing MIROS, ensure you have the following software installed:
+| What | Why | How |
+|---|---|---|
+| Python ≥ 3.9 | | conda or venv |
+| `pysvzerod` | 0D solver | `pip install git+https://github.com/simvascular/svZeroDSolver.git` |
+| `svOneDSolver` executable | 1D solver | [SimTK download](https://simtk.org/frs/index.php?group_id=188) or build from source; `miros doctor` finds it on `PATH`, in the usual install locations, or via `MIROS_ONEDSOLVER` |
+| a display | only for `miros show caps` and `miros inflow edit` | |
 
-| Software | Purpose | Download |
-|----------|---------|----------|
-| **SimVascular** (2025-06-21+) | Cardiovascular modeling and meshing | [simvascular.github.io](https://simvascular.github.io/) |
-| **svOneDSolver** | 1D hemodynamic solver | [SimTK Downloads](https://simtk.org/frs/index.php?group_id=188) |
-| **Python 3.9+** | Runtime environment | [python.org](https://www.python.org/) |
-| **Conda** (recommended) | Environment management | [anaconda.com](https://www.anaconda.com/) |
+Everything else is on PyPI and installed automatically. SeqSeg (the segmentation step that
+produces the input surface) is a separate package and is not required to run MIROS.
 
----
+## Install
 
-## Installation (~20 minutes)
-
-### 1. Clone the Repository
+Until MIROS is on PyPI, install from the repository:
 
 ```bash
 git clone https://github.com/BryannGan/MIROS.git
 cd MIROS
-```
-
-### 2. Create Python Environment
-
-```bash
-# Create a new conda environment
-conda create -n MIROS python=3.11
-conda activate MIROS
-```
-
-### 3. Install Python Dependencies
-
-```bash
-# Install SeqSeg (ML-based segmentation toolkit)
-pip install seqseg
-
-# Install 0D solver Python interface
+conda create -n MIROS python=3.11 && conda activate MIROS     # or any venv
+pip install -e .
 pip install git+https://github.com/simvascular/svZeroDSolver.git
-
-# Install other dependencies
-pip install numpy scipy pandas matplotlib vtk
-
-# Install CMA-ES optimizer (required for automatic boundary condition tuning)
-pip install cma
+miros doctor                                                # checks packages and finds OneDSolver
 ```
 
-### 4. Install SimVascular and svOneDSolver
+Linux, macOS and Windows use the same code path; there is nothing to configure per OS.
 
-Follow the official installation guides:
-- **SimVascular**: https://simvascular.github.io/documentation/installation.html
-- **svOneDSolver**: https://simtk.org/frs/index.php?group_id=188
-
-### 5. Configure MIROS
-
-Edit `package/__init__.py` to set paths for your system. See the [Configuration](#configuration) section below for detailed instructions.
-
-### 6. Verify Installation
+## Quick start: the example
 
 ```bash
-conda activate MIROS
-cd /path/to/MIROS
-python -m package
+miros run examples/aorta
 ```
 
----
+This runs the whole pipeline on the bundled aortic-arch case (about two minutes; the 1D solve
+is most of it). Nothing is asked at run time. Afterwards:
 
-## Configuration
-
-All configuration is done in `package/__init__.py`. Below is a complete guide to each setting.
-
-### Operating System
-
-```python
-Windows = False  # Set to True if running on Windows, False for Linux/macOS
+```
+examples/aorta/
+├── case.yaml                     the inputs (read it — it is commented)
+├── work/                         caps, centerlines, 0D/1D solver inputs, rcrt.dat, tuning_report.json
+└── results/
+    ├── 0D/                       0D_results.csv, 0D_statistics.csv, 0D_summary.json, 0D_outlets.png
+    └── 1D/                       solver outputs, extracted_results_{flow,pressure,area}.csv,
+                                  extracted_results_pressure_mmHg.csv, extracted_results.vtp
 ```
 
-### Solver Paths
-
-#### Linux/macOS
-
-```python
-# Path to the 1D solver executable
-OneDSolv = '/usr/local/sv/oneDSolver/2025-07-02/bin/OneDSolver'
-
-# Path to SimVascular executable (Linux/Mac only)
-sv_py_bin = '/usr/local/sv/simvascular/2025-06-21/simvascular'
-
-# Path to your Python environment's python binary
-# Find this by running: which python (with your env activated)
-local_py_bin = '/home/username/miniconda3/envs/MIROS/bin/python'
-```
-
-#### Windows
-
-```python
-Windows = True
-
-# Path to the 1D solver executable
-OneDSolv = 'C:/Program Files/SimVascular/svOneDSolver/2022-10-04/svOneDSolver.exe'
-
-# SimVascular installation directory
-sv_dir = 'C:/Program Files/SimVascular/SimVascular/2023-03-27'
-sv_bat = 'sv.bat'  # Do not change this
-
-# Path to your Python environment's python binary
-# Find this by running: where python (with your env activated)
-local_py_bin = 'C:/Users/username/anaconda3/envs/MIROS/python.exe'
-```
-
-### Project Paths
-
-```python
-# Master folder: where all results will be saved
-# This folder should contain your input surface mesh
-master_folder = '/path/to/your/project/folder'
-
-# Path to your clipped (outlet-defined) surface mesh
-# This is the SeqSeg output after outlets have been defined
-clipped_seqseg_results = os.path.join(master_folder, 'clipped_seqseg_results.vtp')
-
-# Model name (used in solver input files, no critical functionality)
-surf_name = 'my_surface'
-```
-
-### Automatic Outlet Definition (Optional)
-
-If you want MIROS to automatically clip the SeqSeg output and define outlets:
-
-```python
-automatic_define_outlets = True  # Enable automatic clipping
-
-# Path to raw SeqSeg surface mesh (before clipping)
-segseqed_model = '/path/to/seqseg_surface_mesh.vtp'
-
-# Path to SeqSeg extracted centerline
-seqseg_cl = '/path/to/seqseg_centerline.vtp'
-```
-
-> **Warning**: Automatic clipping is experimental and may not work for all geometries. For best results, use SimVascular GUI or Paraview to manually clip your model.
-
-### Mesh Settings
-
-```python
-# Edge size for surface remeshing
-# Options:
-#   - 'auto' (RECOMMENDED): Automatically compute based on model geometry
-#   - numeric value (e.g., 0.1): Fixed edge size in model units
-#
-# If using a numeric value:
-#   - Model in mm: typical values 0.1 - 1.0
-#   - Model in cm: typical values 0.01 - 0.1
-edge_size = 'auto'
-```
-
-### Complete Configuration Example
-
-#### Linux/macOS Example
-
-```python
-import os
-
-# Operating System
-Windows = False
-
-# Solver paths
-OneDSolv = '/usr/local/sv/oneDSolver/2025-07-02/bin/OneDSolver'
-sv_py_bin = '/usr/local/sv/simvascular/2025-06-21/simvascular'
-local_py_bin = '/home/user/miniconda3/envs/MIROS/bin/python'
-
-# Ignore these for Linux/Mac
-sv_dir, sv_bat = None, None
-
-# Project paths
-master_folder = '/home/user/projects/patient_001'
-clipped_seqseg_results = os.path.join(master_folder, 'clipped_seqseg_results.vtp')
-surf_name = 'patient_001_aorta'
-
-# Automatic clipping (disabled - using pre-clipped model)
-automatic_define_outlets = False
-segseqed_model = ''
-seqseg_cl = ''
-
-# Mesh settings
-edge_size = 'auto'
-```
-
-#### Windows Example
-
-```python
-import os
-
-# Operating System
-Windows = True
-
-# Solver paths
-OneDSolv = 'C:/Program Files/SimVascular/svOneDSolver/2022-10-04/svOneDSolver.exe'
-sv_dir = 'C:/Program Files/SimVascular/SimVascular/2023-03-27'
-sv_bat = 'sv.bat'
-local_py_bin = 'C:/Users/user/anaconda3/envs/MIROS/python.exe'
-sv_py_bin = None  # Not used on Windows
-
-# Project paths
-master_folder = 'C:/Users/user/projects/patient_001'
-clipped_seqseg_results = os.path.join(master_folder, 'clipped_seqseg_results.vtp')
-surf_name = 'patient_001_aorta'
-
-# Automatic clipping (disabled)
-automatic_define_outlets = False
-segseqed_model = ''
-seqseg_cl = ''
-
-# Mesh settings
-edge_size = 'auto'
-```
-
----
-
-## Usage
-
-### Running MIROS
+Run it again and nothing happens — every stage records what it read, and only stale stages
+re-run. Change a pressure target in `case.yaml` and only `tune` onward re-runs.
 
 ```bash
-# Activate your environment
-conda activate MIROS
-
-# Navigate to MIROS directory
-cd /path/to/MIROS
-
-# Run the pipeline
-python -m package
+miros status examples/aorta        # which stages are fresh / stale and why
+miros run examples/aorta --from tune
 ```
 
-### Workflow Modes
+## Your own case
 
-MIROS offers four workflow modes:
-
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| **Mode 1** | Full pipeline with **automatic boundary condition tuning** (Recommended) | Fresh simulation - interactively set flow/pressure targets |
-| **Mode 2** | Full pipeline with manual boundary conditions | Fresh simulation - user provides pre-defined rcrt.dat |
-| **Mode 3** | 1D extraction only | Re-extract results from existing 1D simulation |
-| **Mode 4** | 0D extraction only | Re-extract results from existing 0D simulation |
-
-You will be prompted to select a mode when running MIROS.
-
-> **Tip**: Mode 1 (automatic tuning) is recommended for most users. It guides you through setting physiologically meaningful targets without requiring manual parameter calculations.
-
----
-
-## Workflow Overview
-
-### Mode 1: Full Pipeline with Automatic Boundary Condition Tuning (Recommended)
-
-This mode guides you through setting physiological targets and automatically finds the optimal boundary condition parameters.
-
-#### Step 1: Preprocessing (`sv_preprocess.py`)
-- Generates the surface mesh from a medical image using Seqseg - https://github.com/numisveinsson/SeqSeg
-- Loads your clipped SeqSeg surface mesh - outlets open
-- Computes adaptive edge size (if set to 'auto')
-- Remeshes the surface for simulation quality
-- Generates volume mesh using TetGen
-- Extracts boundary surfaces (caps and wall)
-- Prompts you to select the inlet cap
-
-#### Step 2: Inflow Waveform (`gen_inflow.py`)
-- Interactive GUI to design cardiac inflow waveform
-- Drag control points to shape the waveform
-- Enter heart rate and number of time steps
-
-#### Step 3: Automatic Boundary Condition Tuning (`tune_bc.py`)
-
-The tuning wizard will guide you through four simple steps:
-
-**Step 3.1: Blood Flow Distribution**
-- Specify what percentage of blood flow should go to each outlet
-- Example: For a model with 5 outlets, you might set 50%, 10%, 20%, 10%, 10%
-
-**Step 3.2: Target Blood Pressure**
-- Select where to measure pressure (inlet or any outlet)
-- Enter target systolic (max) and diastolic (min) pressure values
-- Typical healthy adult values: 120/80 mmHg
-
-**Step 3.3: Optimization Time Limit**
-- Set how long the optimizer should search (default: 10 minutes)
-- The optimizer stops early if it finds a good solution
-
-**Step 3.4: Optimization Method**
-- **CMA-ES Optimizer** (Recommended): Robust global search, reliably finds optimal parameters
-- **Two-Phase Optimizer**: Faster alternative, but may get stuck in local minima
-
-The optimizer will then automatically find resistance (R) and capacitance (C) values that achieve your specified targets.
-
-#### Step 4: Simulation
-- Runs 0D and 1D simulations with the optimized boundary conditions
-- Extracts and visualizes results
-
----
-
-### Mode 2: Full Pipeline with Manual Boundary Conditions
-
-For users who prefer to specify boundary condition parameters directly.
-
-#### Step 1: Preprocessing
-Same as Mode 1.
-
-#### Step 2: Manual Boundary Conditions
-After preprocessing, edit the generated `rcrt.dat` file in your master folder to define RCR boundary conditions for each outlet:
-
-```
-# Example rcrt.dat format
-2                           # RCR type identifier
-
-2                           # Number of time points (always 2)
-cap_outlet1                 # Outlet name (must match cap file name)
-100.0                       # Rp (proximal resistance)
-0.0001                      # C (capacitance)
-1000.0                      # Rd (distal resistance)
-0.0 0.0                     # Time point 1
-1.0 0.0                     # Time point 2
-
-2
-cap_outlet2
-...
+```bash
+miros init ~/cases/patient01 --surface /path/to/clipped_surface.vtp --inflow /path/to/inflow.flow
 ```
 
-#### Step 3: Inflow Waveform (`gen_inflow.py`)
-- Interactive GUI to design cardiac inflow waveform
-- Drag control points to shape the waveform
-- Enter heart rate and number of time steps
-- Alternatively, use an existing inflow file
+`init` finds the caps of the surface, names them `cap_1, cap_2, …` in decreasing-area order,
+proposes the largest as the inlet, and writes a commented `case.yaml` with equal flow splits.
+Then edit the file — the flow splits and the pressure targets are the parts that are yours —
+and run it:
 
-#### Step 4: 0D Simulation (`gen_params0D.py` + `run_0D.py`)
-- Sets up 0D simulation parameters
-- Runs svZeroDSolver
-- Saves results to CSV
+```bash
+miros run ~/cases/patient01
+```
 
-#### Step 5: 1D Simulation (`gen_params_cl_run_1D.py`)
-- Generates parameter configuration file (`params_1D.dat`)
-- Extracts centerlines from the model
-- Creates 1D mesh
-- Runs the OneDSolver
-- Automatically retries with finer mesh if simulation fails
+Inputs:
 
-#### Step 6: Result Extraction
-- **1D Results** (`extract_1d_res.py`): Extracts flow, pressure, and area waveforms; projects onto centerlines and volume mesh; generates CSV and VTP/VTU files
-- **0D Results** (`extract_0d_res.py`): Analyzes outlet waveforms; computes statistics; generates plots
+- **Surface** (`.vtp`, `.stl` or `.ply`): the vessel wall, *open* at the inlet and at every
+  outlet, so that each boundary loop is a cross-section. Units `cm` or `mm` (`model.units`;
+  mm is converted). A closed SeqSeg surface can be opened by cut planes listed under
+  `model.outlets`; an interactive editor for those is on the roadmap.
+- **Inflow** (`.flow`): two columns, time [s] and flow [mL/s], one cardiac cycle. Draw one with
+  `miros inflow edit ~/cases/patient01` if you do not have a measurement.
+- **Boundary conditions**: either targets (`mode: tune`) or your own `rcrt.dat` (`mode: file`).
 
----
+To see which cap is which: `miros show caps ~/cases/patient01` opens a 3D view with the caps
+labelled by name and area.
 
-### Modes 3 & 4: Extraction Only
+## The case file
 
-Use these modes to re-analyze existing simulation results without re-running the solvers.
+```yaml
+model:
+  surface: clipped_surface.vtp
+  units: cm                     # cm | mm
+  inlet: cap_1                  # null = largest cap
+  cap_names: null               # your own names for the caps, in decreasing-area order
 
----
+inflow:
+  source: file                  # file | gui
+  file: inflow.flow
 
-## Input/Output Files
+boundary_conditions:
+  mode: tune                    # tune | file
+  flow_split: {cap_2: 50, cap_3: 20, cap_4: 10, cap_5: 10, cap_6: 10}   # percent, sums to 100
+  pressure_mmHg: {at: inlet, systolic: 130, diastolic: 75, mean: null}  # at: inlet or an outlet
+  tolerance_pct: 5
 
-### Input Files
+simulation:
+  cycles: 6                     # cardiac cycles to simulate; the last one is extracted
+  run_1d: true
 
-| File | Description | Location |
-|------|-------------|----------|
-| `clipped_seqseg_results.vtp` | Clipped surface mesh with defined outlets | `master_folder` |
-| `seqseg_centerline.vtp` | SeqSeg centerline (if using auto-clipping) | User-specified |
+outputs:
+  volume_projection: false      # also paint 1D results onto a tetrahedral lumen (VTU)
 
-### Generated Configuration Files
+solvers:
+  onedsolver: null              # path; null = search
+```
 
-| File | Description | User Action |
-|------|-------------|-------------|
-| `rcrt.dat` | RCR boundary conditions | **Must edit** before simulation |
-| `params_1D.dat` | 1D simulation parameters | Optional editing |
-| `params_0D.dat` | 0D simulation parameters | Optional editing |
-| `inflow_1d.flow` | Cardiac inflow waveform | Generated via GUI |
+Unknown keys are errors, values are validated before anything runs, and paths are relative to
+the case directory. The full template with every option is what `miros init` writes.
 
-### Output Files
+## Boundary-condition tuning
 
-#### Mesh Files (in `master_folder`)
-| File | Description |
-|------|-------------|
-| `remeshed_clipped_seqseg_results.vtp` | Remeshed surface mesh |
-| `volume_mesh.vtu` | 3D tetrahedral volume mesh |
+With `mode: tune`, MIROS finds RCR (three-element Windkessel) parameters for every outlet so
+that the 0D model reproduces the flow distribution and the pressure you asked for:
 
-#### Boundary Surfaces (in `caps_and_wall/`)
-| File | Description |
-|------|-------------|
-| `wall.vtp` | Vessel wall surface |
-| `cap_*.vtp` | Individual cap surfaces for each outlet |
-| `cap_areas.txt` | Computed area for each cap |
+1. **Analytic start** — no solves. From the mean inflow and the target mean pressure the network
+   resistance follows; each outlet gets its share according to the flow split (minus the vessel
+   resistance on its path). Compliance comes from the diastolic decay time constant and is
+   distributed in proportion to flow, so every outlet has the same RC time constant.
+2. **Fixed-point loop** — a few 0D solves (a second or two in total). Each iteration measures the
+   achieved splits and the pressure waveform and updates the resistances, the proximal fraction
+   Rp/(Rp+Rd) and the compliance multiplicatively.
 
-#### 1D Results (in `1D_results/`)
-| File | Description |
-|------|-------------|
-| `*_flow.csv` | Flow waveforms at each segment |
-| `*_pressure.csv` | Pressure waveforms at each segment |
-| `*_area.csv` | Area waveforms at each segment |
-| `centerline_results.vtp` | Centerline with projected results |
-| `volume_results.vtu` | Volume mesh with projected results |
+On the example, the flow splits are within 5 % after the first solve and exact by the third.
 
-#### 0D Results (in `0D_results/`)
-| File | Description |
-|------|-------------|
-| `0D_results.csv` | Raw 0D solver output |
-| `outlet_statistics.csv` | Summary statistics for each outlet |
-| `outlet_*.png` | Waveform plots for each outlet |
+**Reachable targets.** The pulse pressure at the *inlet* has a floor: part of it is the inertial
+and viscous pressure drop along the vessels themselves (the 0D vessels carry inductance and
+resistance), which depends on the inflow waveform and the geometry, not on the outlets. With a
+waveform that swings from −120 to +610 mL/s, 120/80 at the inlet of the example is not
+attainable — the best trade-off is about 129/75, which is why the example targets 130/75. When
+a target is out of reach the tuner keeps its best iterate, stops, and tells you why; target an
+outlet (`pressure_mmHg.at: cap_2`), use a smoother waveform, or accept the values.
+`work/tuning_report.json` records every iteration.
 
----
+## Commands
+
+| Command | Does |
+|---|---|
+| `miros doctor` | checks Python packages, finds `OneDSolver`, reports whether a display is available |
+| `miros init DIR [--surface S] [--inflow F] [--units mm] [--inlet NAME]` | creates `DIR/case.yaml` with the detected caps |
+| `miros run DIR [--from STAGE] [--until STAGE] [--force]` | runs stale stages; `--from` re-runs from a stage onward |
+| `miros status DIR` | fresh / stale / never per stage, with the reason |
+| `miros show caps DIR` | 3D view of the surface with labelled caps |
+| `miros inflow edit DIR` | draw the inflow waveform; writes `inflow.file` |
+
+Stages, in order: `preprocess inflow rom_model tune sim_0d extract_0d volume_mesh sim_1d extract_1d`.
+
+Everything is also a library: `miros.case.Case(dir).run()`, `miros.rom_model.build_rom_model(...)`,
+`miros.geometry.centerlines.compute_centerlines(...)`.
+
+## Validation
+
+`tests/integration/test_centerlines_vs_simvascular.py` gates the built-in centerline backend
+against SimVascular's output on the example (`examples/aorta/reference`): same branches and
+junctions, path lengths within 3 %, end-of-branch areas equal to the cap areas, and a 0D model
+that reproduces SimVascular's flow splits within 1 percentage point with identical boundary
+conditions (measured: 0.4). Run the suite with
+
+```bash
+pip install -e ".[dev]"
+pytest                         # unit + integration; the 1D tests skip without OneDSolver
+pytest -m "not slow"           # unit tests only, a second
+```
 
 ## Troubleshooting
 
-### Common Issues
+- `miros doctor` first. A missing `pysvzerod` means the 0D solver was not installed from git; a
+  missing `OneDSolver` means the 1D stage is unavailable — set `solvers.onedsolver` or
+  `MIROS_ONEDSOLVER`, or set `simulation.run_1d: false`.
+- *"Surface has no boundary loops"*: the surface is closed. Clip it open at the inlet and outlets
+  (or describe the cut planes under `model.outlets`).
+- *"outlet … is not reachable from the inlet through the lumen"*: the surface has a gap or two
+  vessels are not actually connected; check it in ParaView.
+- *"flow_split names … are not outlets"*: names in `case.yaml` must match the caps `init`
+  detected; `miros show caps` shows them.
+- A stage that fails leaves earlier stages fresh; fix the input and `miros run` again — only the
+  failed stage and its dependants run.
 
-#### "SimVascular not found" or import errors
+## Roadmap
 
-**Solution**: Verify your `sv_py_bin` path points to the correct SimVascular executable:
-```bash
-# Linux/Mac: Find SimVascular
-ls /usr/local/sv/simvascular/
-
-# Windows: Check Program Files
-dir "C:\Program Files\SimVascular"
-```
-
-#### "OneDSolver not found"
-
-**Solution**: Verify your `OneDSolv` path:
-```bash
-# Linux/Mac
-ls /usr/local/sv/oneDSolver/
-
-# Windows
-dir "C:\Program Files\SimVascular\svOneDSolver"
-```
-
-#### 1D simulation fails with "Simulation crashed"
-
-**Possible causes**:
-1. **Mesh too coarse**: MIROS will automatically retry with finer mesh
-2. **Invalid boundary conditions**: Check `rcrt.dat` for correct format and reasonable values
-3. **Inflow waveform issues**: Ensure smooth waveform without discontinuities
-
-#### "No caps found" error
-
-**Solution**: Ensure your input mesh has properly defined outlets. The mesh should have distinct cap surfaces at each outlet.
-
-#### Python environment issues
-
-**Solution**: Ensure you're using the correct Python environment:
-```bash
-conda activate MIROS
-which python  # Linux/Mac
-where python  # Windows
-```
-Update `local_py_bin` in `__init__.py` with this path.
-
-#### GUI not displaying (Linux)
-
-**Solution**: Ensure you have a display configured:
-```bash
-# If using SSH, enable X11 forwarding
-ssh -X user@host
-
-# Or set display
-export DISPLAY=:0
-```
-
-### Getting Help
-
-If you encounter issues not covered here:
-1. Check that all paths in `__init__.py` are correct
-2. Verify all dependencies are installed
-3. Open an issue on GitHub: https://github.com/BryannGan/MIROS/issues
-
----
+- Interactive outlet editor (`miros clip`) to open a closed SeqSeg surface without ParaView,
+  writing the cut planes to `case.yaml`; then a seed picker for SeqSeg.
+- A second example of different topology (carotid or coronary).
+- PyPI release; `pysvzerod` wheels upstream so that `pip install miros` resolves everything.
 
 ## Citation
 
-If you use MIROS in your research, please cite:
+MIROS builds on SimVascular, svZeroDSolver, svOneDSolver and SeqSeg:
 
-*(Citation information will be added upon manuscript publication)*
-
-Related work:
-- SeqSeg: DOI: 10.1007/s10439-024-03611-z
-- SimVascular: https://simvascular.github.io/
-
----
+- Updegrove A. et al., *SimVascular: An Open Source Pipeline for Cardiovascular Simulation*, Ann Biomed Eng 2017.
+- Pfaller M.R. et al., *Automated generation of 0D and 1D reduced-order models of patient-specific blood flow*, Int J Numer Meth Biomed Eng 2022.
+- Sveinsson Cepero N. & Shadden S.C., *SeqSeg: Learning Local Segments for Automatic Vascular Model Construction*, Ann Biomed Eng 2024. https://doi.org/10.1007/s10439-024-03611-z
 
 ## License
 
-This project is licensed under the terms specified in the LICENSE file.
-
----
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT (see `LICENSE`). The vendored SimVascular modules keep their own permissive license, reproduced in every file under `miros/rom` and `miros/rom_extract`.

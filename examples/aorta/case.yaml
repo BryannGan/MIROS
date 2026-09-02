@@ -1,0 +1,70 @@
+# MIROS example: aortic arch with four branches, segmented with SeqSeg and
+# clipped open at the inlet and the five outlets. Run it with
+#
+#     miros run examples/aorta
+#
+# Every answer the pipeline needs lives in this file; nothing is asked at run
+# time. Paths are relative to this file's directory.
+name: aorta
+
+model:
+  surface: clipped_seqseg_results.vtp
+  units: cm                     # cm | mm  (mm models are converted to cm)
+  inlet: cap_1                  # cap name; null = the largest cap
+  # caps are named cap_1, cap_2, ... in decreasing-area order; give your own
+  # names here (same order) if you prefer, e.g. [aorta_root, desc_aorta, ...]
+  cap_names: null
+  outlets: []                   # cut planes for a still-closed surface
+  remesh: false                 # usually unnecessary; centerlines work on the raw surface
+  remesh_edge_size: null
+
+inflow:
+  source: file                  # file | gui
+  file: inflow.flow             # one cardiac cycle: time [s], flow [mL/s]
+  heart_rate_bpm: 100           # gui only
+  points_per_cycle: 1200        # gui only
+  peak_flow_mL_s: 600           # gui axis bound
+
+boundary_conditions:
+  mode: tune                    # tune | file (file: give an rcrt.dat below)
+  file: null
+  flow_split:                   # percent of flow per outlet, must sum to 100
+    cap_2: 50                   # descending aorta
+    cap_3: 20
+    cap_4: 10
+    cap_5: 10
+    cap_6: 10
+  pressure_mmHg:
+    at: inlet                   # 'inlet' or an outlet name
+    systolic: 130               # see README "Boundary-condition tuning" for why an
+    diastolic: 75               # inlet pulse pressure has a floor set by the inflow
+    mean: null                  # optional third target
+  tolerance_pct: 5
+  max_iterations: 12
+  rp_fraction: 0.09             # starting Rp / (Rp + Rd); tuned from here
+  tuning_cycles: 5              # 0D cycles per tuning solve
+
+simulation:
+  cycles: 6
+  seg_min_num: 4
+  element_size: 0.01
+  save_data_freq: 5
+  density: 1.06
+  viscosity: 0.04
+  material:                     # Olufsen 1999 defaults
+    olufsen_k1: 0.0
+    olufsen_k2: -22.5267
+    olufsen_k3: 1.0e+7
+    olufsen_exponent: 1.0
+    olufsen_pressure: 0.0
+    linear_ehr: 1.0e+7
+    linear_pressure: 0.0
+  run_1d: true
+  max_1d_retries: 3
+
+outputs:
+  volume_projection: false      # tetgen volume mesh + 3D projection of 1D results
+  plots: true
+
+solvers:
+  onedsolver: null              # path to the OneDSolver executable; null = search

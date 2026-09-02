@@ -11,13 +11,10 @@ pytestmark = pytest.mark.slow
 
 
 @pytest.fixture(scope='module')
-def case_dir(surface_path, tmp_path_factory):
-    inflow = surface_path.parent / 'inflow_1d.flow'
-    if not inflow.exists():
-        pytest.skip("inflow file missing")
+def case_dir(surface_path, inflow_path, tmp_path_factory):
     pytest.importorskip('pysvzerod')
     d = tmp_path_factory.mktemp('case')
-    assert main(['init', str(d), '--surface', str(surface_path), '--inflow', str(inflow), '--name', 't']) == 0
+    assert main(['init', str(d), '--surface', str(surface_path), '--inflow', str(inflow_path), '--name', 't']) == 0
     y = d / 'case.yaml'
     cfg = yaml.safe_load(y.read_text())
     outlets = list(cfg['boundary_conditions']['flow_split'])
