@@ -14,6 +14,8 @@ def _yaml() -> YAML:
     y.preserve_quotes = True
     y.width = 120
     y.indent(mapping=2, sequence=4, offset=2)
+    # write None as an explicit `null` instead of leaving the key blank
+    y.representer.add_representer(type(None), lambda r, d: r.represent_scalar('tag:yaml.org,2002:null', 'null'))
     return y
 
 

@@ -65,6 +65,11 @@ class Viewer:
 
     def clear(self):
         if self.plotter is not None:
+            if self.can_pick:
+                try:
+                    self.plotter.disable_picking()       # pyvista refuses to enable picking twice
+                except Exception:
+                    pass
             self.plotter.clear()
             self.plotter.clear_slider_widgets()
         self.actors = {}
@@ -198,12 +203,17 @@ class _LineWriter(io.TextIOBase):
 
 
 def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage) -> None:
-    """The pipeline with console output routed to emit_line; raises on failure."""
+    """The pipeline with plain-text console output routed to emit_line; raises on failure."""
     from ..case import Case
+    from . import console
     w = _LineWriter(emit_line)
-    with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-        Case(case_dir).run(from_stage=from_stage, force=force, progress=emit_stage)
-    w.flush()
+    console.set_plain(True)                  # no ANSI colours / box drawing in the log pane
+    try:
+        with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
+            Case(case_dir).run(from_stage=from_stage, force=force, progress=emit_stage)
+    finally:
+        w.flush()
+        console.set_plain(False)
 
 
 # ============================================================================
@@ -432,14 +442,21 @@ class MainWindow:
         self.dragger = _DraggablePoints(ax, self.x_ctrl, self.y_ctrl, refresh)
         lay.addWidget(self.canvas, 1)
         form = W.QFormLayout()
-        self.hr = W.QDoubleSpinBox(); self.hr.setRange(20, 250); self.hr.setValue(70); self.hr.setSuffix(' bpm')
+        self.hr = W.QDoubleSpinBox(); self.hr.setRange(20, 250); self.hr.setValue(70); self.hr.setDecimals(1)
         self.hr.valueChanged.connect(lambda *_: self._inflow_summary())
-        form.addRow('heart rate', self.hr)
-        self.peak = W.QDoubleSpinBox(); self.peak.setRange(1, 5000); self.peak.setValue(400); self.peak.setSuffix(' mL/s')
+        form.addRow('heart rate [bpm]', self.hr)
+        self.peak = W.QDoubleSpinBox(); self.peak.setRange(1, 5000); self.peak.setValue(400); self.peak.setDecimals(0)
+        self.peak.setToolTip('sets the vertical range of the editor: -25% .. +125% of this value')
         self.peak.valueChanged.connect(self._rescale_axis)
-        form.addRow('peak flow axis', self.peak)
-        self.npts = W.QSpinBox(); self.npts.setRange(50, 20000); self.npts.setValue(1200)
-        form.addRow('points per cycle', self.npts)
+        form.addRow('expected peak flow [mL/s]', self.peak)
+        self.npts = W.QSpinBox(); self.npts.setRange(50, 20000); self.npts.setValue(1200); self.npts.setSingleStep(100)
+        self.npts.setToolTip('The waveform is saved with this many time samples per cycle, and the 0D and 1D solvers '
+                             'use the same time step. The solvers are implicit, so this is a resolution choice, not a '
+                             'stability (CFL) limit; 1200 resolves a cardiac cycle well.')
+        self.dt_label = W.QLabel(''); self.dt_label.setStyleSheet('color: gray')
+        self.npts.valueChanged.connect(lambda *_: self._inflow_summary())
+        r = W.QHBoxLayout(); r.addWidget(self.npts); r.addWidget(self.dt_label); r.addStretch()
+        form.addRow('time samples per cycle', r)
         lay.addLayout(form)
         row = W.QHBoxLayout()
         load = W.QPushButton('Load .flow file…'); load.clicked.connect(self._load_inflow_file)
@@ -460,6 +477,7 @@ class MainWindow:
         tz = getattr(np, 'trapezoid', None) or np.trapz
         self.inflow_info.setText('cycle %.3f s · mean %.1f mL/s · peak %.1f mL/s · min %.1f mL/s' % (
             t[-1], tz(q, t) / (t[-1] - t[0]), q.max(), q.min()))
+        self.dt_label.setText('→ solver time step %.2f ms' % (1000.0 * t[-1] / (len(t) - 1)))
 
     def waveform(self):
         from scipy.interpolate import interp1d
@@ -518,7 +536,7 @@ class MainWindow:
         lay = W.QVBoxLayout(page)
         lay.addWidget(W.QLabel('<b>Caps</b> — click one in the 3D view or in the table. Name them, pick the inlet, share the flow.'))
         self.table = W.QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(['name', 'area [cm²]', 'inlet', 'flow %'])
+        self.table.setHorizontalHeaderLabels(['name', 'area [cm²]', 'inlet', 'flow share [%]'])
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.currentCellChanged.connect(lambda r, *_: self._select(r))
@@ -533,15 +551,15 @@ class MainWindow:
         lay.addWidget(W.QLabel('<b>Pressure target</b>'))
         grid = W.QFormLayout()
         self.anchor = W.QComboBox(); grid.addRow('measured at', self.anchor)
-        self.sys = W.QDoubleSpinBox(); self.sys.setRange(1, 400); self.sys.setSuffix(' mmHg'); self.sys.setValue(120)
-        self.dia = W.QDoubleSpinBox(); self.dia.setRange(1, 400); self.dia.setSuffix(' mmHg'); self.dia.setValue(80)
-        grid.addRow('systolic', self.sys); grid.addRow('diastolic', self.dia)
+        self.sys = W.QDoubleSpinBox(); self.sys.setRange(1, 400); self.sys.setDecimals(0); self.sys.setValue(120)
+        self.dia = W.QDoubleSpinBox(); self.dia.setRange(1, 400); self.dia.setDecimals(0); self.dia.setValue(80)
+        grid.addRow('systolic [mmHg]', self.sys); grid.addRow('diastolic [mmHg]', self.dia)
         mr = W.QHBoxLayout()
         self.mean_on = W.QCheckBox('also target the mean')
-        self.mean = W.QDoubleSpinBox(); self.mean.setRange(1, 400); self.mean.setSuffix(' mmHg'); self.mean.setValue(93)
+        self.mean = W.QDoubleSpinBox(); self.mean.setRange(1, 400); self.mean.setDecimals(0); self.mean.setValue(93)
         self.mean.setEnabled(False); self.mean_on.toggled.connect(self.mean.setEnabled)
         mr.addWidget(self.mean_on); mr.addWidget(self.mean)
-        grid.addRow('mean', mr)
+        grid.addRow('mean [mmHg]', mr)
         lay.addLayout(grid)
         hint = W.QLabel('The pulse pressure at the inlet has a floor set by the inflow waveform and the vessel inertia; '
                         'if a target is out of reach the tuner says so and keeps its best result.')
@@ -573,7 +591,7 @@ class MainWindow:
             holder = W.QWidget(); h = W.QHBoxLayout(holder); h.setContentsMargins(0, 0, 0, 0)
             h.addStretch(); h.addWidget(radio); h.addStretch()
             self.table.setCellWidget(r, 2, holder)
-            box = W.QDoubleSpinBox(); box.setRange(0, 100); box.setDecimals(1); box.setSuffix(' %')
+            box = W.QDoubleSpinBox(); box.setRange(0, 100); box.setDecimals(1)
             box.setValue(float(bc.flow_split.get(self.names[r], 0.0))); box.setEnabled(r != self.inlet_row)
             box.valueChanged.connect(self._splits_changed)
             self.split_boxes.append(box); self.table.setCellWidget(r, 3, box)
@@ -691,7 +709,8 @@ class MainWindow:
         W = self.W
         page = W.QWidget()
         lay = W.QVBoxLayout(page)
-        lay.addWidget(W.QLabel('<b>Run</b> — only stages whose inputs changed are executed.'))
+        lay.addWidget(W.QLabel('<b>Run</b> — press Run. Only the stages whose inputs changed since the last run are '
+                               'executed (the table shows which); the rest are reused.'))
         self.stage_table = W.QTableWidget(len(STAGES), 3)
         self.stage_table.setHorizontalHeaderLabels(['stage', 'state', 'detail'])
         self.stage_table.verticalHeader().setVisible(False)
@@ -710,10 +729,10 @@ class MainWindow:
         lay.addLayout(opts)
         row = W.QHBoxLayout()
         self.run_btn = W.QPushButton('▶ Run'); self.run_btn.clicked.connect(lambda: self.start_run(None, False))
-        self.from_combo = W.QComboBox(); self.from_combo.addItems(STAGES)
-        from_btn = W.QPushButton('Run from stage'); from_btn.clicked.connect(lambda: self.start_run(self.from_combo.currentText(), False))
-        force_btn = W.QPushButton('Force all'); force_btn.clicked.connect(lambda: self.start_run(None, True))
-        row.addWidget(self.run_btn); row.addWidget(self.from_combo); row.addWidget(from_btn); row.addWidget(force_btn); row.addStretch()
+        self.run_btn.setToolTip('run the stages that are stale or have never run')
+        self.force_btn = W.QPushButton('Re-run everything'); self.force_btn.clicked.connect(lambda: self.start_run(None, True))
+        self.force_btn.setToolTip('ignore what was already computed and run every stage again')
+        row.addWidget(self.run_btn); row.addWidget(self.force_btn); row.addStretch()
         lay.addLayout(row)
         self.log = W.QPlainTextEdit(); self.log.setReadOnly(True)
         self.log.setFont(self.QtGui.QFont('monospace'))
@@ -760,6 +779,7 @@ class MainWindow:
         from qtpy import QtCore
         self.log.clear()
         self.run_btn.setEnabled(False)
+        self.force_btn.setEnabled(False)
         self.tabs.setCurrentIndex(3)
         em = _RunEmitter.make()
         em.line.connect(self.log.appendPlainText)
@@ -781,6 +801,7 @@ class MainWindow:
     def _run_done(self, ok, err):
         self.worker = None
         self.run_btn.setEnabled(True)
+        self.force_btn.setEnabled(True)
         self.refresh_status()
         if ok:
             self.status('run finished')
