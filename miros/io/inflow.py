@@ -39,4 +39,5 @@ def num_time_steps(path, cycles: int) -> int:
 
 def mean_flow(path) -> float:
     t, q = read_inflow(path)
-    return float(np.trapz(q, t) / (t[-1] - t[0]))
+    trapezoid = getattr(np, "trapezoid", None) or np.trapz   # numpy 2 renamed trapz
+    return float(trapezoid(q, t) / (t[-1] - t[0]))

@@ -276,6 +276,27 @@ def write_boundary_dir(surface: vtk.vtkPolyData, caps: Sequence[Cap], out_dir) -
     return names
 
 
+def fill_small_loops(surface: vtk.vtkPolyData, max_points: int = 5) -> vtk.vtkPolyData:
+    """
+    Close boundary loops with at most `max_points` points (single missing
+    triangles left by remeshing). A real vessel cross-section always has
+    many more boundary points than that at any usable edge size.
+    """
+    surface = triangulate_and_clean(surface)
+    small = [loop for loop in boundary_loops(surface) if len(loop) <= max_points]
+    if not small:
+        return surface
+    append = vtk.vtkAppendPolyData()
+    append.AddInputData(surface)
+    for loop in small:
+        append.AddInputData(triangulate_loop(loop))
+    clean = vtk.vtkCleanPolyData()
+    clean.SetInputConnection(append.GetOutputPort())
+    clean.PointMergingOn()
+    clean.Update()
+    return clean.GetOutput()
+
+
 def cap_summary(caps: Sequence[Cap]) -> str:
     rows = ["%-10s %10s %9s %9s  %s" % ('cap', 'area', 'radius', 'inlet', 'centroid')]
     for c in caps:
