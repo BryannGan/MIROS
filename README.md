@@ -45,7 +45,8 @@ implemented on VTK, SciPy, pyacvd and tetgen.
 | Python ≥ 3.9 | | conda or venv |
 | `pysvzerod` | 0D solver | `pip install git+https://github.com/simvascular/svZeroDSolver.git` |
 | `svOneDSolver` executable | 1D solver | [SimTK download](https://simtk.org/frs/index.php?group_id=188) or build from source; `miros doctor` finds it on `PATH`, in the usual install locations, or via `MIROS_ONEDSOLVER` |
-| a display | only for `miros show caps` and `miros inflow edit` | |
+| a display | only for `miros setup`, `miros show caps` and `miros inflow edit` | |
+| `pyvistaqt` + `PySide6` | only for `miros setup` | `pip install "miros[gui]"` (or `pip install pyvistaqt PySide6`) |
 
 Everything else is on PyPI and installed automatically. SeqSeg (the segmentation step that
 produces the input surface) is a separate package and is not required to run MIROS.
@@ -100,12 +101,17 @@ miros init ~/cases/patient01 --surface /path/to/clipped_surface.vtp --inflow /pa
 
 `init` finds the caps of the surface, names them `cap_1, cap_2, …` in decreasing-area order,
 proposes the largest as the inlet, and writes a commented `case.yaml` with equal flow splits.
-Then edit the file — the flow splits and the pressure targets are the parts that are yours —
-and run it:
+The flow splits and the pressure targets are the parts that are yours; set them either in the
+3D setup window or by editing the file, then run:
 
 ```bash
+miros setup ~/cases/patient01      # 3D view + form: name caps, choose the inlet, flow shares,
+                                   # pressure anchor and targets; Save writes case.yaml
 miros run ~/cases/patient01
 ```
+
+`miros setup` needs the GUI extra (`pip install "miros[gui]"`, i.e. `pyvistaqt` and `PySide6`);
+without it, edit `case.yaml` by hand — it is the same information.
 
 Inputs:
 
@@ -114,11 +120,11 @@ Inputs:
   mm is converted). A closed SeqSeg surface can be opened by cut planes listed under
   `model.outlets`; an interactive editor for those is on the roadmap.
 - **Inflow** (`.flow`): two columns, time [s] and flow [mL/s], one cardiac cycle. Draw one with
-  `miros inflow edit ~/cases/patient01` if you do not have a measurement.
+  `miros inflow edit ~/cases/patient01` if you do not have a measurement (`init … --inflow-source gui`
+  when you have no file yet; the drawn waveform is saved and reused, redraw any time).
 - **Boundary conditions**: either targets (`mode: tune`) or your own `rcrt.dat` (`mode: file`).
 
-To see which cap is which: `miros show caps ~/cases/patient01` opens a 3D view with the caps
-labelled by name and area.
+`miros show caps ~/cases/patient01` is the read-only version of the setup view.
 
 ## The case file
 
@@ -185,8 +191,9 @@ outlet (`pressure_mmHg.at: cap_2`), use a smoother waveform, or accept the value
 | `miros init DIR [--surface S] [--inflow F] [--units mm] [--inlet NAME]` | creates `DIR/case.yaml` with the detected caps |
 | `miros run DIR [--from STAGE] [--until STAGE] [--force]` | runs stale stages; `--from` re-runs from a stage onward |
 | `miros status DIR` | fresh / stale / never per stage, with the reason |
-| `miros show caps DIR` | 3D view of the surface with labelled caps |
-| `miros inflow edit DIR` | draw the inflow waveform; writes `inflow.file` |
+| `miros setup DIR` | 3D view + form: cap names, inlet, flow shares, pressure anchor and targets → `case.yaml` (needs `miros[gui]`) |
+| `miros show caps DIR` | read-only 3D view of the surface with labelled caps |
+| `miros inflow edit DIR` | draw the inflow waveform; saved to `inflow.file` and picked up by the next run |
 
 Stages, in order: `preprocess inflow rom_model tune sim_0d extract_0d volume_mesh sim_1d extract_1d`.
 

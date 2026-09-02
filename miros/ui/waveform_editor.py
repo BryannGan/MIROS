@@ -29,11 +29,12 @@ class _DraggablePoints:
     def __init__(self, ax, x, y, update):
         self.ax, self.x, self.y, self.update = ax, x, y, update
         self.canvas = ax.figure.canvas
-        self.pts = ax.scatter(x, y, c='red', s=90, picker=10, zorder=5)
+        self.pts = ax.scatter(x, y, c='red', s=90, picker=True, pickradius=12, zorder=5)
         self._ind = None
-        self.canvas.mpl_connect('pick_event', self.on_pick)
-        self.canvas.mpl_connect('motion_notify_event', self.on_motion)
-        self.canvas.mpl_connect('button_release_event', self.on_release)
+        # keep the connection ids: the object must stay alive for the callbacks to fire
+        self._cids = [self.canvas.mpl_connect('pick_event', self.on_pick),
+                      self.canvas.mpl_connect('motion_notify_event', self.on_motion),
+                      self.canvas.mpl_connect('button_release_event', self.on_release)]
 
     def on_pick(self, event):
         if event.artist is self.pts:
@@ -91,7 +92,7 @@ def edit_waveform(heart_rate_bpm: float = 60.0, points_per_cycle: int = 1200,
         g = interp1d(x_ctrl, y_ctrl, kind='quadratic', fill_value='extrapolate')
         line.set_data(x_dense, g(x_dense))
 
-    _DraggablePoints(ax, x_ctrl, y_ctrl, refresh)
+    dragger = _DraggablePoints(ax, x_ctrl, y_ctrl, refresh)   # must outlive plt.show(): it owns the callbacks
     ax.set_title('Drag the red points to shape one cardiac cycle (first and last point are tied).\n'
                  'Set heart rate and axis range below, press Enter in each box, then close the window.')
     ax.grid(True, alpha=0.3)
@@ -130,6 +131,7 @@ def edit_waveform(heart_rate_bpm: float = 60.0, points_per_cycle: int = 1200,
             ybox.text_disp.set_color('red')
     ybox.on_submit(on_ymax)
     plt.show()
+    del dragger
 
     x_norm, y = line.get_data()
     T = 60.0 / state['hr']

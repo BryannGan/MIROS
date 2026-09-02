@@ -5,7 +5,8 @@ miros — command line.
     miros init DIR [--surface ...]   write a case.yaml (with detected caps)
     miros run DIR [--from S] [--until S] [--force]
     miros status DIR
-    miros show caps DIR              labelled caps in a 3D window
+    miros setup DIR                  3D view + form: caps, inlet, flow splits, pressure targets
+    miros show caps DIR              labelled caps in a 3D window (read-only)
     miros inflow edit DIR            draw the inflow waveform
 """
 import argparse
@@ -25,7 +26,9 @@ def cmd_doctor(args):
     rows = []
     for mod, note in [('numpy', ''), ('scipy', ''), ('pandas', ''), ('vtk', ''), ('pyvista', ''), ('matplotlib', ''),
                       ('yaml', 'PyYAML'), ('pwlf', 'ROM builder'), ('pyacvd', 'remesh'), ('tetgen', 'volume mesh'),
-                      ('rich', 'optional, console'), ('pysvzerod', '0D solver'), ('seqseg', 'upstream segmentation')]:
+                      ('rich', 'optional, console'), ('ruamel.yaml', 'case.yaml editing'),
+                      ('pyvistaqt', 'optional, `miros setup` window'), ('qtpy', 'optional, Qt binding'),
+                      ('pysvzerod', '0D solver'), ('seqseg', 'upstream segmentation')]:
         try:
             m = importlib.import_module(mod)
             rows.append((mod, 'ok', getattr(m, '__version__', ''), note))
@@ -75,11 +78,10 @@ def cmd_init(args):
                    onedsolver=args.onedsolver)
     console.ok("wrote %s" % yaml_path)
     steps = []
-    if surface:
-        steps.append("miros show caps %s        (which cap is which; set model.inlet if not the largest)" % d)
     if not inflow:
         steps.append("miros inflow edit %s      (draw one cardiac cycle)" % d)
-    steps.append("edit %s: flow_split (percent per outlet) and pressure_mmHg" % yaml_path)
+    steps.append("miros setup %s            (3D view: name caps, choose the inlet, flow splits, pressure target)" % d)
+    steps.append("    or edit %s by hand" % yaml_path)
     steps.append("miros run %s" % d)
     console.info("next:")
     for k, s in enumerate(steps, 1):
@@ -125,6 +127,15 @@ def cmd_show(args):
                             font_size=12, point_size=0, shape_opacity=0.6)
     pl.show()
     return 0
+
+
+def cmd_setup(args):
+    from .ui.setup_window import run_setup
+    try:
+        return run_setup(args.dir)
+    except RuntimeError as e:
+        console.error(str(e))
+        return 1
 
 
 def cmd_inflow(args):
@@ -176,6 +187,10 @@ def main(argv=None):
     p = sub.add_parser('status', help='which stages are up to date')
     p.add_argument('dir')
     p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser('setup', help='3D view + form: name caps, choose the inlet, flow splits, pressure targets')
+    p.add_argument('dir')
+    p.set_defaults(fn=cmd_setup)
 
     p = sub.add_parser('show', help='3D view')
     p.add_argument('what', choices=['caps'])
