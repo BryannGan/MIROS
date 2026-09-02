@@ -68,10 +68,7 @@ class SetupWindow:
             self.plotter.add_mesh(pv.wrap(self.surf), color='lightgray', opacity=0.35, name='wall')
             for c in self.caps:
                 self.actors[c.name] = self.plotter.add_mesh(pv.wrap(c.polydata), color=self._color(c), name='cap:' + c.name)
-            self._labels()
-            self.plotter.enable_mesh_picking(callback=self._picked, show=False, show_message=False, left_clicking=True)
-            self.plotter.add_text('click a cap to select it', position='lower_left', font_size=10)
-            self.plotter.reset_camera()
+            # labels and picking are wired up after the form exists (they read the name fields)
 
         # ---- form -----------------------------------------------------
         panel = QtWidgets.QWidget()
@@ -165,7 +162,12 @@ class SetupWindow:
         form.addLayout(buttons)
 
         self._anchor_items(p.at)
-        self._inlet_changed()
+        if self.plotter is not None:
+            if getattr(self.plotter, 'iren', None) is not None:      # no interactor when pyvista is forced off-screen
+                self.plotter.enable_mesh_picking(callback=self._picked, show=False, show_message=False, left_clicking=True)
+                self.plotter.add_text('click a cap to select it', position='lower_left', font_size=10)
+            self.plotter.reset_camera()
+        self._inlet_changed()          # also draws the labels
         self.win.resize(1300, 720)
 
     # ---- helpers ------------------------------------------------------
