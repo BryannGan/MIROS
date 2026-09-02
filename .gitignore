@@ -15,3 +15,14 @@ res_from_seqseg/
 sv_project/
 tests_from_before/
 test/
+
+# Generated pipeline outputs (simulation results, meshes)
+0D_results/
+1D_results/
+mesh-complete/
+0D_solver_input.json
+model_info.txt
+test_Linux_Mac/remeshed_model.vtp
+test_Linux_Mac/extracted_centerlines.vtp
+test_Linux_Mac/1d_model.vtp
+optimization_testing/results/

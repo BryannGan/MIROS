@@ -25,6 +25,7 @@ We present a streamlined process to produce reduced-order model (ROM) simulation
 ## Features
 
 - Automated pipeline from medical images to hemodynamic simulations
+- **NEW: Automatic boundary condition tuning** - Interactively specify target blood flow distribution and pressure values, and let the optimizer find the optimal parameters
 - 1D Navier-Stokes blood flow simulation along vessel centerlines
 - 0D lumped-parameter simulations at vessel outlets
 - Interactive GUI for cardiac inflow waveform design
@@ -76,6 +77,9 @@ pip install git+https://github.com/simvascular/svZeroDSolver.git
 
 # Install other dependencies
 pip install numpy scipy pandas matplotlib vtk
+
+# Install CMA-ES optimizer (required for automatic boundary condition tuning)
+pip install cma
 ```
 
 ### 4. Install SimVascular and svOneDSolver
@@ -266,23 +270,26 @@ python -m package
 
 ### Workflow Modes
 
-MIROS offers three workflow modes:
+MIROS offers four workflow modes:
 
 | Mode | Description | Use Case |
 |------|-------------|----------|
-| **Mode 1** | Full pipeline | Fresh simulation from surface mesh |
-| **Mode 2** | 1D extraction only | Re-extract results from existing 1D simulation |
-| **Mode 3** | 0D extraction only | Re-extract results from existing 0D simulation |
+| **Mode 1** | Full pipeline with **automatic boundary condition tuning** (Recommended) | Fresh simulation - interactively set flow/pressure targets |
+| **Mode 2** | Full pipeline with manual boundary conditions | Fresh simulation - user provides pre-defined rcrt.dat |
+| **Mode 3** | 1D extraction only | Re-extract results from existing 1D simulation |
+| **Mode 4** | 0D extraction only | Re-extract results from existing 0D simulation |
 
 You will be prompted to select a mode when running MIROS.
+
+> **Tip**: Mode 1 (automatic tuning) is recommended for most users. It guides you through setting physiologically meaningful targets without requiring manual parameter calculations.
 
 ---
 
 ## Workflow Overview
 
-### Mode 1: Full Pipeline
+### Mode 1: Full Pipeline with Automatic Boundary Condition Tuning (Recommended)
 
-The complete workflow consists of the following steps:
+This mode guides you through setting physiological targets and automatically finds the optimal boundary condition parameters.
 
 #### Step 1: Preprocessing (`sv_preprocess.py`)
 - Generates the surface mesh from a medical image using Seqseg - https://github.com/numisveinsson/SeqSeg
@@ -293,25 +300,66 @@ The complete workflow consists of the following steps:
 - Extracts boundary surfaces (caps and wall)
 - Prompts you to select the inlet cap
 
-#### Step 2: Boundary Conditions
-After preprocessing, you must edit the generated `rcrt.dat` file in your master folder to define RCR boundary conditions for each outlet:
+#### Step 2: Inflow Waveform (`gen_inflow.py`)
+- Interactive GUI to design cardiac inflow waveform
+- Drag control points to shape the waveform
+- Enter heart rate and number of time steps
+
+#### Step 3: Automatic Boundary Condition Tuning (`tune_bc.py`)
+
+The tuning wizard will guide you through four simple steps:
+
+**Step 3.1: Blood Flow Distribution**
+- Specify what percentage of blood flow should go to each outlet
+- Example: For a model with 5 outlets, you might set 50%, 10%, 20%, 10%, 10%
+
+**Step 3.2: Target Blood Pressure**
+- Select where to measure pressure (inlet or any outlet)
+- Enter target systolic (max) and diastolic (min) pressure values
+- Typical healthy adult values: 120/80 mmHg
+
+**Step 3.3: Optimization Time Limit**
+- Set how long the optimizer should search (default: 10 minutes)
+- The optimizer stops early if it finds a good solution
+
+**Step 3.4: Optimization Method**
+- **CMA-ES Optimizer** (Recommended): Robust global search, reliably finds optimal parameters
+- **Two-Phase Optimizer**: Faster alternative, but may get stuck in local minima
+
+The optimizer will then automatically find resistance (R) and capacitance (C) values that achieve your specified targets.
+
+#### Step 4: Simulation
+- Runs 0D and 1D simulations with the optimized boundary conditions
+- Extracts and visualizes results
+
+---
+
+### Mode 2: Full Pipeline with Manual Boundary Conditions
+
+For users who prefer to specify boundary condition parameters directly.
+
+#### Step 1: Preprocessing
+Same as Mode 1.
+
+#### Step 2: Manual Boundary Conditions
+After preprocessing, edit the generated `rcrt.dat` file in your master folder to define RCR boundary conditions for each outlet:
 
 ```
 # Example rcrt.dat format
-2                           # Number of outlets
+2                           # RCR type identifier
 
+2                           # Number of time points (always 2)
 cap_outlet1                 # Outlet name (must match cap file name)
-2                           # Number of RCR parameters
-Rp Rd                       # Proximal resistance, Distal resistance
-C                           # Capacitance
+100.0                       # Rp (proximal resistance)
+0.0001                      # C (capacitance)
+1000.0                      # Rd (distal resistance)
+0.0 0.0                     # Time point 1
+1.0 0.0                     # Time point 2
 
-cap_outlet2
 2
-Rp Rd
-C
+cap_outlet2
+...
 ```
-**note:** An automatic boundary condition tuning feature is coming. Users may define a flow split ratio among all outlets and an 'approximate' pressure value at one outlet. The program may optimize boundary conditions to fit the pressure value and flow split ratio.
-
 
 #### Step 3: Inflow Waveform (`gen_inflow.py`)
 - Interactive GUI to design cardiac inflow waveform
@@ -319,23 +367,25 @@ C
 - Enter heart rate and number of time steps
 - Alternatively, use an existing inflow file
 
-#### Step 4: 1D Simulation (`gen_params_cl_run_1D.py`)
+#### Step 4: 0D Simulation (`gen_params0D.py` + `run_0D.py`)
+- Sets up 0D simulation parameters
+- Runs svZeroDSolver
+- Saves results to CSV
+
+#### Step 5: 1D Simulation (`gen_params_cl_run_1D.py`)
 - Generates parameter configuration file (`params_1D.dat`)
 - Extracts centerlines from the model
 - Creates 1D mesh
 - Runs the OneDSolver
 - Automatically retries with finer mesh if simulation fails
 
-#### Step 5: 0D Simulation (`gen_params0D.py` + `run_0D.py`)
-- Sets up 0D simulation parameters
-- Runs svZeroDSolver
-- Saves results to CSV
-
 #### Step 6: Result Extraction
 - **1D Results** (`extract_1d_res.py`): Extracts flow, pressure, and area waveforms; projects onto centerlines and volume mesh; generates CSV and VTP/VTU files
 - **0D Results** (`extract_0d_res.py`): Analyzes outlet waveforms; computes statistics; generates plots
 
-### Modes 2 & 3: Extraction Only
+---
+
+### Modes 3 & 4: Extraction Only
 
 Use these modes to re-analyze existing simulation results without re-running the solvers.
 
