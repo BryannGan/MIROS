@@ -26,6 +26,8 @@ from typing import List, Optional
 
 import numpy as np
 
+from ..timestep import recommended_samples_per_cycle
+
 _NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]*$')
 STAGES = ['preprocess', 'inflow', 'rom_model', 'tune', 'sim_0d', 'extract_0d', 'volume_mesh', 'sim_1d', 'extract_1d']
 
@@ -53,7 +55,7 @@ class Viewer:
         self.actors = {}
         self._pick_cb = None
         self._camera_set = False
-        self._results = None
+        self._results = None          # cache of the loaded 1D results (see load_results)
         if not offscreen:
             from pyvistaqt import QtInteractor
             self.plotter = QtInteractor(parent)
@@ -73,7 +75,6 @@ class Viewer:
             self.plotter.clear()
             self.plotter.clear_slider_widgets()
         self.actors = {}
-        self._results = None
 
     def show_model(self, surf, caps, names: List[str], inlet_row: int, selected: Optional[int] = None,
                    pick_callback=None):
@@ -110,59 +111,95 @@ class Viewer:
             self.actors[i].prop.color = self.SELECTED if i == selected else (self.INLET if i == inlet_row else self.OUTLET)
         self.plotter.render()
 
-    def show_results(self, vtp_path, quantity: str, surf=None):
-        """Tube of the 1D centerline coloured by `quantity` ('pressure_mmHg' | 'flow' | 'area'), with a time slider."""
+    # ---- 1D results ------------------------------------------------------
+    UNITS = {'pressure_mmHg': 'mmHg', 'flow': 'mL/s', 'area': 'cm²'}
+
+    def load_results(self, vtp_path, surf):
+        """
+        Read the 1D result file once: the centerline (as polylines), the
+        per-time arrays of every quantity, and the map from each wall point
+        to its nearest centerline point.
+        """
+        import pyvista as pv
+        from scipy.spatial import cKDTree
+        vtp_path = Path(vtp_path)
+        key = (str(vtp_path), vtp_path.stat().st_mtime)
+        if self._results is not None and self._results.get('key') == key:
+            return self._results
+        cl = pv.read(str(vtp_path))
+        stacks, times = {}, None
+        for q in ('pressure_mmHg', 'flow', 'area'):
+            keys = [k for k in cl.point_data.keys() if k.startswith(q + '_')]
+            if not keys:
+                continue
+            t = np.array([float(k[len(q) + 1:]) for k in keys])
+            order = np.argsort(t)
+            stacks[q] = np.stack([np.asarray(cl.point_data[keys[i]], dtype=np.float32) for i in order], axis=0)
+            times = t[order]
+        if not stacks:
+            raise RuntimeError("no per-time result arrays in %s" % vtp_path)
+        base = pv.PolyData(cl.points.copy())
+        base.lines = cl.lines
+        base = base.strip()                                   # 2-point cells -> polylines (points unchanged)
+        base.point_data['orig'] = np.arange(cl.n_points)
+        base.point_data['r'] = (np.asarray(cl.point_data['MaximumInscribedSphereRadius'])
+                                if 'MaximumInscribedSphereRadius' in cl.point_data else np.full(cl.n_points, 0.15))
+        tube = base.tube(scalars='r', absolute=True, n_sides=12, capping=True)
+        tube_idx = np.asarray(tube.point_data['orig']).round().astype(int)
+        wall = pv.wrap(surf).copy() if surf is not None else None
+        wall_idx = cKDTree(cl.points).query(wall.points)[1] if wall is not None else None
+        self._results = dict(key=key, times=times, stacks=stacks, tube=tube, tube_idx=tube_idx,
+                             wall=wall, wall_idx=wall_idx,
+                             clim={q: (float(np.nanmin(s)), float(np.nanmax(s))) for q, s in stacks.items()})
+        return self._results
+
+    def show_results(self, vtp_path, quantity: str = 'pressure_mmHg', on: str = 'surface', mean: bool = False, surf=None):
+        """
+        Colour the model by a 1D result: on the wall (each wall point takes the
+        value of its nearest centerline point) or on the centerline as a tube.
+        A slider scrubs the last cycle; `mean` shows the cycle average.
+        """
         if self.plotter is None:
             return
-        import pyvista as pv
-        cl = pv.read(str(vtp_path))
-        keys = [k for k in cl.point_data.keys() if k.startswith(quantity + '_')]
-        if not keys:
-            raise RuntimeError("no %s arrays in %s" % (quantity, vtp_path))
-        times = np.array([float(k[len(quantity) + 1:]) for k in keys])
-        order = np.argsort(times)
-        keys = [keys[i] for i in order]
-        times = times[order]
-        stack = np.stack([cl.point_data[k] for k in keys], axis=0)
-        unit = {'pressure_mmHg': 'mmHg', 'flow': 'mL/s', 'area': 'cm²'}.get(quantity, '')
-        clim = (float(np.nanmin(stack)), float(np.nanmax(stack)))
+        res = self.load_results(vtp_path, surf)
+        if quantity not in res['stacks']:
+            raise RuntimeError("no %s in the 1D results" % quantity)
+        stack, times, clim = res['stacks'][quantity], res['times'], res['clim'][quantity]
+        if on == 'surface' and res['wall'] is not None:
+            mesh, idx = res['wall'], res['wall_idx']
+        else:
+            mesh, idx = res['tube'], res['tube_idx']
+        unit = self.UNITS.get(quantity, '')
+        title = '%s [%s]' % (quantity.replace('_mmHg', ''), unit)
+        # rebuild the scene without dropping the cached results
+        keep = self._results
         self.clear()
-        if surf is not None:
-            self.plotter.add_mesh(pv.wrap(surf), name='wall', color='lightgray', opacity=0.12)
-        base = cl.copy()
-        radius = np.asarray(base.point_data['MaximumInscribedSphereRadius']) if 'MaximumInscribedSphereRadius' in base.point_data else None
-        state = {'i': len(keys) - 1}
+        self._results = keep
+        if on != 'surface' and surf is not None:
+            self.plotter.add_mesh(res['wall'], name='wall', color='lightgray', opacity=0.12)
+        mesh.point_data['value'] = stack[-1][idx]
+        self.plotter.add_mesh(mesh, name='results', scalars='value', clim=clim, cmap='coolwarm', smooth_shading=True,
+                              scalar_bar_args=dict(title=title, vertical=True, position_x=0.86, position_y=0.15,
+                                                   height=0.7, width=0.06, title_font_size=14, label_font_size=12))
+        state = {'i': len(times) - 1}
 
         def draw(i):
-            i = int(np.clip(round(i), 0, len(keys) - 1))
+            i = int(np.clip(round(i), 0, len(times) - 1))
             state['i'] = i
-            base.point_data['value'] = stack[i]
-            if radius is not None:
-                base.point_data['r'] = radius
-                tube = base.tube(scalars='r', absolute=True, n_sides=16, capping=True)
-            else:
-                tube = base.tube(radius=0.15, n_sides=16)
-            self.plotter.add_mesh(tube, name='results', scalars='value', clim=clim, cmap='coolwarm',
-                                  scalar_bar_args=dict(title='%s [%s]' % (quantity.replace('_mmHg', ''), unit)))
+            mesh.point_data['value'] = stack[i][idx]
             self.plotter.add_text('t = %.3f s' % (times[i] - times[0]), position='upper_left', font_size=11, name='time')
+            self.plotter.render()
 
-        draw(state['i'])
-        if self.can_pick:
-            self.plotter.disable_picking()
-        self.plotter.add_slider_widget(draw, rng=(0, len(keys) - 1), value=state['i'], title='time step',
-                                       style='modern', pointa=(0.25, 0.08), pointb=(0.75, 0.08), fmt='%.0f')
-        self._results = (base, stack, times, clim, quantity)
-        self.plotter.render()
-
-    def show_mean_results(self):
-        """Replace the current time step by the cycle mean."""
-        if self.plotter is None or self._results is None:
-            return
-        base, stack, times, clim, quantity = self._results
-        base.point_data['value'] = stack.mean(axis=0)
-        tube = base.tube(scalars='r', absolute=True, n_sides=16, capping=True) if 'r' in base.point_data else base.tube(radius=0.15)
-        self.plotter.add_mesh(tube, name='results', scalars='value', clim=clim, cmap='coolwarm')
-        self.plotter.add_text('cycle mean', position='upper_left', font_size=11, name='time')
+        if mean:
+            mesh.point_data['value'] = stack.mean(axis=0)[idx]
+            self.plotter.add_text('cycle mean', position='upper_left', font_size=11, name='time')
+        else:
+            draw(state['i'])
+            self.plotter.add_slider_widget(draw, rng=(0, len(times) - 1), value=state['i'], title='time step',
+                                           style='modern', pointa=(0.12, 0.07), pointb=(0.62, 0.07), fmt='%.0f',
+                                           title_height=0.02, slider_width=0.02, tube_width=0.006)
+        self.plotter.add_text('1D %s on the %s' % (quantity.replace('_mmHg', ''), 'wall' if on == 'surface' else 'centerline'),
+                              position='lower_left', font_size=10, name='hint')
         self.plotter.render()
 
 
@@ -449,15 +486,23 @@ class MainWindow:
         self.peak.setToolTip('sets the vertical range of the editor: -25% .. +125% of this value')
         self.peak.valueChanged.connect(self._rescale_axis)
         form.addRow('expected peak flow [mL/s]', self.peak)
-        self.npts = W.QSpinBox(); self.npts.setRange(50, 20000); self.npts.setValue(1200); self.npts.setSingleStep(100)
-        self.npts.setToolTip('The waveform is saved with this many time samples per cycle, and the 0D and 1D solvers '
-                             'use the same time step. The solvers are implicit, so this is a resolution choice, not a '
-                             'stability (CFL) limit; 1200 resolves a cardiac cycle well.')
+        self.npts = W.QSpinBox(); self.npts.setRange(50, 50000); self.npts.setValue(1200); self.npts.setSingleStep(100)
+        self.npts.setToolTip('The waveform is saved with this many time samples per cycle and the 0D and 1D solvers '
+                             'use that spacing as their time step. The recommendation keeps the 1D Courant number '
+                             '(v_peak + wave speed) * dt / dx below 0.8, with dx the smallest vessel diameter. '
+                             'svOneDSolver is implicit, so smaller counts still run; the recommendation is about '
+                             'accuracy, and the 1D run time grows with it.')
         self.dt_label = W.QLabel(''); self.dt_label.setStyleSheet('color: gray')
         self.npts.valueChanged.connect(lambda *_: self._inflow_summary())
         r = W.QHBoxLayout(); r.addWidget(self.npts); r.addWidget(self.dt_label); r.addStretch()
         form.addRow('time samples per cycle', r)
         lay.addLayout(form)
+        rec_row = W.QHBoxLayout()
+        self.rec_label = W.QLabel(''); self.rec_label.setWordWrap(True)
+        self.rec_btn = W.QPushButton('Use recommended'); self.rec_btn.clicked.connect(self._use_recommended)
+        rec_row.addWidget(self.rec_label, 1); rec_row.addWidget(self.rec_btn)
+        lay.addLayout(rec_row)
+        self.recommended = None
         row = W.QHBoxLayout()
         load = W.QPushButton('Load .flow file…'); load.clicked.connect(self._load_inflow_file)
         self.save_inflow_btn = W.QPushButton('Use this waveform'); self.save_inflow_btn.clicked.connect(self.save_inflow)
@@ -478,6 +523,29 @@ class MainWindow:
         self.inflow_info.setText('cycle %.3f s · mean %.1f mL/s · peak %.1f mL/s · min %.1f mL/s' % (
             t[-1], tz(q, t) / (t[-1] - t[0]), q.max(), q.min()))
         self.dt_label.setText('→ solver time step %.2f ms' % (1000.0 * t[-1] / (len(t) - 1)))
+        self._update_recommendation(t[-1], float(np.abs(q).max()))
+
+    def _update_recommendation(self, cycle_s, q_peak):
+        if self.case is None or not self.caps or q_peak <= 0:
+            self.rec_label.setText('recommendation appears once a case with caps is loaded')
+            self.rec_btn.setEnabled(False)
+            return
+        s = self.case.config.simulation
+        m = s.material
+        inlet = self.caps[self.inlet_row]
+        n, d = recommended_samples_per_cycle(cycle_s, q_peak, inlet.area, min(c.area for c in self.caps),
+                                             m.olufsen_k1, m.olufsen_k2, m.olufsen_k3, s.density)
+        self.recommended = n
+        self.rec_btn.setEnabled(True)
+        self.rec_label.setText(
+            '<b>Recommended: %d samples per cycle</b> (Δt %.2f ms) to keep the 1D Courant number below %.1f — '
+            'peak inlet velocity %.0f cm/s + wave speed %.0f cm/s over the smallest vessel diameter %.2f cm. '
+            '<span style="color:gray">1200 is the fast setting; the solvers are implicit and run stably with it.</span>'
+            % (n, d['dt_ms'], d['cfl'], d['v_peak'], d['wave_speed'], d['dx']))
+
+    def _use_recommended(self):
+        if self.recommended:
+            self.npts.setValue(int(self.recommended))
 
     def waveform(self):
         from scipy.interpolate import interp1d
@@ -816,13 +884,35 @@ class MainWindow:
         W = self.W
         page = W.QWidget()
         lay = W.QVBoxLayout(page)
+        lay.addWidget(W.QLabel('<b>Show in the 3D view</b>'))
         row = W.QHBoxLayout()
-        for label, fn in [('Caps', self._show_caps), ('1D pressure', lambda: self._show_1d('pressure_mmHg')),
-                          ('1D flow', lambda: self._show_1d('flow')), ('Cycle mean', self.viewer.show_mean_results)]:
-            b = W.QPushButton(label); b.clicked.connect(fn); row.addWidget(b)
+        self.q_pressure = W.QRadioButton('pressure'); self.q_pressure.setChecked(True)
+        self.q_flow = W.QRadioButton('flow')
+        self.on_wall = W.QRadioButton('on the wall'); self.on_wall.setChecked(True)
+        self.on_cl = W.QRadioButton('on the centerline')
+        g1 = W.QButtonGroup(page); g1.addButton(self.q_pressure); g1.addButton(self.q_flow)
+        g2 = W.QButtonGroup(page); g2.addButton(self.on_wall); g2.addButton(self.on_cl)
+        self.mean_box = W.QCheckBox('cycle mean')
+        for wdg in (self.q_pressure, self.q_flow):
+            row.addWidget(wdg)
+        row.addSpacing(16)
+        for wdg in (self.on_wall, self.on_cl):
+            row.addWidget(wdg)
+        row.addSpacing(16)
+        row.addWidget(self.mean_box)
         row.addStretch()
-        openb = W.QPushButton('Open results folder'); openb.clicked.connect(self._open_results); row.addWidget(openb)
         lay.addLayout(row)
+        row2 = W.QHBoxLayout()
+        self.show_1d_btn = W.QPushButton('Show 1D result'); self.show_1d_btn.clicked.connect(self._show_1d)
+        capsb = W.QPushButton('Show caps'); capsb.clicked.connect(self._show_caps)
+        openb = W.QPushButton('Open results folder'); openb.clicked.connect(self._open_results)
+        row2.addWidget(self.show_1d_btn); row2.addWidget(capsb); row2.addStretch(); row2.addWidget(openb)
+        lay.addLayout(row2)
+        self.results_hint = W.QLabel('1D results are computed on the centerline; on the wall, every surface point '
+                                     'shows the value of its nearest centerline point. The slider in the 3D view '
+                                     'scrubs the last cardiac cycle.')
+        self.results_hint.setWordWrap(True); self.results_hint.setStyleSheet('color: gray')
+        lay.addWidget(self.results_hint)
         self.tune_info = W.QLabel(''); self.tune_info.setWordWrap(True); lay.addWidget(self.tune_info)
         self.res_table = W.QTableWidget(0, 5)
         self.res_table.setHorizontalHeaderLabels(['outlet', 'split %', 'sys', 'dia', 'mean [mmHg]'])
@@ -837,15 +927,35 @@ class MainWindow:
     def _show_caps(self):
         if self.surf is not None:
             self.viewer.show_model(self.surf, self.caps, self.names, self.inlet_row, self.selected, pick_callback=self._picked)
+            self.status('caps')
 
-    def _show_1d(self, quantity):
+    def _busy(self, on: bool):
+        if self.offscreen:
+            return
+        from qtpy import QtCore, QtWidgets
+        if on:
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        else:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        QtWidgets.QApplication.processEvents()
+
+    def _show_1d(self, *_):
         f = self.case.results_1d / 'extracted_results.vtp' if self.case else None
         if f is None or not f.exists():
-            return self.error('no 1D results yet (run with the 1D simulation enabled)')
+            return self.error('No 1D results yet. Run with the 1D simulation enabled (Run step), then come back here.')
+        quantity = 'pressure_mmHg' if self.q_pressure.isChecked() else 'flow'
+        on = 'surface' if self.on_wall.isChecked() else 'centerline'
+        self.status('loading 1D %s on the %s…' % (quantity.replace('_mmHg', ''), 'wall' if on == 'surface' else 'centerline'))
+        self._busy(True)
         try:
-            self.viewer.show_results(f, quantity, surf=self.surf)
+            self.viewer.show_results(f, quantity, on=on, mean=self.mean_box.isChecked(), surf=self.surf)
+            self.status('1D %s on the %s%s — drag the slider to scrub the cycle' % (
+                quantity.replace('_mmHg', ''), 'wall' if on == 'surface' else 'centerline',
+                ' (cycle mean)' if self.mean_box.isChecked() else ''))
         except Exception as e:
             self.error(str(e))
+        finally:
+            self._busy(False)
 
     def _open_results(self):
         if self.case is not None:
