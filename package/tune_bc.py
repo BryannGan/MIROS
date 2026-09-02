@@ -88,6 +88,12 @@ def print_warning(message):
 # Large penalty value for failed simulations (not too large to cause overflow)
 LARGE_ERROR = 1e8
 
+# Bounds and starting value for the TOTAL compliance (cm^5/dyn), which is
+# shared out among outlets in proportion to their target flow fraction.
+# Typical total systemic arterial compliance is ~1e-3 cm^5/dyn (about 1 mL/mmHg).
+C_TOTAL_MIN, C_TOTAL_MAX = 1e-4, 1.0
+C_TOTAL_INIT = 5e-3
+
 
 def _safe_value(value, default=0.0):
     """Return default if value is NaN, Inf, or None."""
@@ -686,193 +692,163 @@ def get_cardiac_cycle_duration():
         return 1.0
 
 
-def extract_outlet_metrics(df, ref_outlet, outlet_names, cycle_duration):
+class VesselMap:
     """
-    Extract pressure metrics at the reference outlet.
+    Maps each outlet cap to the 0D vessel that carries its RCR boundary
+    condition, and identifies the inlet vessel.
+
+    The mapping is read from the solver JSON, never inferred from vessel
+    names. sv_rom_simulation names each outlet BC 'RCR_<k>' where k is the
+    cap's index in centerlines_outlets.dat, and tags the vessel with
+    boundary_conditions.outlet = 'RCR_<k>'. Guessing "last segment of each
+    branch" is wrong whenever the network has an inlet trunk or interior
+    branches (it always does), so it is not used anywhere.
+    """
+
+    def __init__(self, config, outlet_names):
+        bc_to_vessel = {}
+        inlet_vessel = None
+        for v in config.get('vessels', []):
+            bcs = v.get('boundary_conditions') or {}
+            if 'outlet' in bcs:
+                bc_to_vessel[bcs['outlet']] = v['vessel_name']
+            if 'inlet' in bcs:
+                inlet_vessel = v['vessel_name']
+        if inlet_vessel is None:
+            raise ValueError("0D solver input has no vessel with an inlet boundary condition")
+
+        rcr_names = set(bc['bc_name'] for bc in config.get('boundary_conditions', [])
+                        if bc.get('bc_type') == 'RCR')
+        self.outlet_vessel = {}
+        missing = []
+        for k, cap in enumerate(outlet_names):
+            bc_name = 'RCR_' + str(k)
+            if bc_name in rcr_names and bc_name in bc_to_vessel:
+                self.outlet_vessel[cap] = bc_to_vessel[bc_name]
+            else:
+                missing.append(cap + ' -> ' + bc_name)
+        if missing:
+            raise ValueError("Could not map outlets to 0D vessels: " + ", ".join(missing) +
+                             ". centerlines_outlets.dat and 0D_solver_input.json disagree; "
+                             "regenerate the 0D solver input.")
+        if len(rcr_names) != len(outlet_names):
+            raise ValueError("0D solver input has " + str(len(rcr_names)) + " RCR boundary "
+                             "conditions but centerlines_outlets.dat lists " +
+                             str(len(outlet_names)) + " outlets.")
+        self.inlet_vessel = inlet_vessel
+        self.outlet_names = list(outlet_names)
+
+    def vessel_for(self, cap):
+        """Vessel name for an outlet cap, or for the string 'inlet'."""
+        if cap == 'inlet':
+            return self.inlet_vessel
+        return self.outlet_vessel[cap]
+
+
+def build_rcr_params(R_values, C_total, outlet_names, flow_splits, Rp_ratio=None):
+    """
+    Build per-outlet RCR parameters from per-outlet total resistances and ONE
+    total compliance.
+
+    Compliance is distributed in proportion to each outlet's target flow
+    fraction (C_i = C_total * s_i), so every outlet has the same RC time
+    constant. A single C shared by all outlets (the previous behaviour) gives
+    a 50 % outlet and a 5 % outlet time constants that differ tenfold.
 
     Args:
-        df: pd.DataFrame, 0D simulation results
-        ref_outlet: str, name of reference outlet
+        R_values: sequence of total resistance per outlet (same order as outlet_names)
+        C_total: total compliance (cm^5/dyn)
         outlet_names: list of outlet names
-        cycle_duration: float, cardiac cycle duration (s)
+        flow_splits: dict {outlet_name: flow_percentage}
+        Rp_ratio: proximal fraction of total R (default from config)
 
     Returns:
-        dict with max_pressure, min_pressure, mean_pressure (in CGS units)
+        dict {outlet_name: {'Rp': float, 'C': float, 'Rd': float}}
     """
-    # Find the segment corresponding to the reference outlet
-    # The outlet segments are the last segment of each branch
-    segments = df['name'].unique().tolist()
+    if Rp_ratio is None:
+        Rp_ratio = default_Rp_ratio
+    total_split = sum(max(flow_splits.get(n, 0.0), 0.0) for n in outlet_names)
+    rcr_params = {}
+    for i, name in enumerate(outlet_names):
+        R_total = float(R_values[i])
+        split = max(flow_splits.get(name, 0.0), 0.0) / total_split if total_split > 0 else 1.0 / len(outlet_names)
+        rcr_params[name] = {
+            'Rp': Rp_ratio * R_total,
+            'C': float(C_total) * split,
+            'Rd': (1.0 - Rp_ratio) * R_total
+        }
+    return rcr_params
 
-    # Group by branch
-    branch_segments = {}
-    for seg in segments:
-        parts = seg.split('_')
-        if len(parts) >= 2:
-            branch = parts[0]
-            seg_num = int(parts[1].replace('seg', ''))
-            if branch not in branch_segments:
-                branch_segments[branch] = []
-            branch_segments[branch].append((seg_num, seg))
 
-    # Get outlet segments (last segment of each branch)
-    outlet_segments = []
-    for branch, segs in branch_segments.items():
-        segs.sort(key=lambda x: x[0])
-        outlet_segments.append(segs[-1][1])
-
-    # Map outlet index to segment (assumes same order)
-    ref_outlet_idx = outlet_names.index(ref_outlet)
-    if ref_outlet_idx < len(outlet_segments):
-        ref_segment = outlet_segments[ref_outlet_idx]
-    else:
-        # Fallback: use first outlet segment
-        ref_segment = outlet_segments[0] if outlet_segments else segments[0]
-
-    # Extract segment data
-    seg_data = df[df['name'] == ref_segment].copy()
-    seg_data = seg_data.sort_values('time')
-
-    # Extract last cardiac cycle
+def _last_cycle(seg_data, cycle_duration):
+    """Rows of seg_data belonging to the last complete cardiac cycle."""
+    if cycle_duration <= 0 or np.isnan(cycle_duration) or np.isinf(cycle_duration):
+        cycle_duration = 1.0
     max_time = seg_data['time'].max()
-    num_cycles = int(max_time / cycle_duration)
-    if num_cycles >= 1:
-        start_time = (num_cycles - 1) * cycle_duration
-    else:
-        start_time = 0
+    num_cycles = int(np.floor(max_time / cycle_duration + 1e-6))
+    start_time = (num_cycles - 1) * cycle_duration if num_cycles >= 1 else 0.0
+    return seg_data[seg_data['time'] >= start_time - 1e-9]
 
-    last_cycle = seg_data[seg_data['time'] >= start_time]
 
-    # Compute metrics (use pressure_out for outlet)
-    metrics = {
+def extract_outlet_metrics(df, ref_outlet, vessel_map, cycle_duration):
+    """
+    Pressure metrics (CGS) at an outlet cap over the last cardiac cycle,
+    read from the vessel that carries that cap's RCR boundary condition.
+    """
+    ref_segment = vessel_map.vessel_for(ref_outlet)
+    seg_data = df[df['name'] == ref_segment].sort_values('time')
+    if seg_data.empty:
+        raise RuntimeError("No 0D results for vessel " + ref_segment + " (outlet " + ref_outlet + ")")
+    last_cycle = _last_cycle(seg_data, cycle_duration)
+    return {
         'max_pressure': last_cycle['pressure_out'].max(),
         'min_pressure': last_cycle['pressure_out'].min(),
         'mean_pressure': last_cycle['pressure_out'].mean(),
         'segment': ref_segment
     }
 
-    return metrics
 
-
-def extract_inlet_metrics(df, cycle_duration):
+def extract_inlet_metrics(df, vessel_map, cycle_duration):
     """
-    Extract pressure metrics at the inlet (first segment of the network).
-
-    Args:
-        df: pd.DataFrame, 0D simulation results
-        cycle_duration: float, cardiac cycle duration (s)
-
-    Returns:
-        dict with max_pressure, min_pressure, mean_pressure (in CGS units)
+    Pressure metrics (CGS) at the inlet over the last cardiac cycle, read
+    from the vessel that carries the inflow boundary condition.
     """
-    segments = df['name'].unique().tolist()
-
-    # Find inlet segment (typically branch0_seg0 or first segment)
-    inlet_segment = None
-    for seg in segments:
-        if 'seg0' in seg or seg.endswith('_0'):
-            inlet_segment = seg
-            break
-
-    if inlet_segment is None:
-        # Fallback to first segment alphabetically
-        inlet_segment = sorted(segments)[0]
-
-    seg_data = df[df['name'] == inlet_segment].copy()
-    seg_data = seg_data.sort_values('time')
-
-    # Extract last cardiac cycle
-    max_time = seg_data['time'].max()
-    num_cycles = int(max_time / cycle_duration)
-    if num_cycles >= 1:
-        start_time = (num_cycles - 1) * cycle_duration
-    else:
-        start_time = 0
-
-    last_cycle = seg_data[seg_data['time'] >= start_time]
-
-    # Compute metrics (use pressure_in for inlet)
-    metrics = {
+    inlet_segment = vessel_map.inlet_vessel
+    seg_data = df[df['name'] == inlet_segment].sort_values('time')
+    if seg_data.empty:
+        raise RuntimeError("No 0D results for inlet vessel " + inlet_segment)
+    last_cycle = _last_cycle(seg_data, cycle_duration)
+    return {
         'max_pressure': last_cycle['pressure_in'].max(),
         'min_pressure': last_cycle['pressure_in'].min(),
         'mean_pressure': last_cycle['pressure_in'].mean(),
         'segment': inlet_segment
     }
 
-    return metrics
 
-
-def extract_flow_distribution(df, outlet_names, cycle_duration):
+def extract_flow_distribution(df, outlet_names, vessel_map, cycle_duration):
     """
-    Extract flow distribution across outlets for verification.
+    Mean outflow per outlet over the last cardiac cycle.
 
-    Returns dict {outlet_name: mean_flow_out}
-
-    Handles edge cases:
-    - Empty dataframes
-    - Missing segments
-    - NaN/Inf values
+    Returns dict {outlet_name: mean |flow_out|}; 0.0 for missing/invalid data.
     """
-    if df.empty:
-        # Return zero flow for all outlets if no data
-        return {name: 0.0 for name in outlet_names}
-
-    segments = df['name'].unique().tolist()
-
-    if not segments:
-        return {name: 0.0 for name in outlet_names}
-
-    # Get outlet segments
-    branch_segments = {}
-    for seg in segments:
-        parts = seg.split('_')
-        if len(parts) >= 2:
-            branch = parts[0]
-            try:
-                seg_num = int(parts[1].replace('seg', ''))
-                if branch not in branch_segments:
-                    branch_segments[branch] = []
-                branch_segments[branch].append((seg_num, seg))
-            except ValueError:
-                # Skip segments with non-numeric identifiers
-                continue
-
-    outlet_segments = []
-    for branch, segs in sorted(branch_segments.items()):
-        segs.sort(key=lambda x: x[0])
-        outlet_segments.append(segs[-1][1])
-
-    # Extract flow for each outlet
     flow_dist = {}
-    max_time = df['time'].max()
-
-    # Safety check for cycle_duration
-    if cycle_duration <= 0 or np.isnan(cycle_duration) or np.isinf(cycle_duration):
-        cycle_duration = 1.0  # Default fallback
-
-    num_cycles = int(max_time / cycle_duration) if max_time > 0 else 0
-    start_time = (num_cycles - 1) * cycle_duration if num_cycles >= 1 else 0
-
-    for i, name in enumerate(outlet_names):
-        if i < len(outlet_segments):
-            seg = outlet_segments[i]
-            seg_data = df[df['name'] == seg]
-            last_cycle = seg_data[seg_data['time'] >= start_time]
-
-            if not last_cycle.empty:
-                flow_value = last_cycle['flow_out'].mean()
-                # Handle NaN/Inf
-                if np.isnan(flow_value) or np.isinf(flow_value):
-                    flow_value = 0.0
-                flow_dist[name] = abs(flow_value)
-            else:
-                flow_dist[name] = 0.0
-        else:
+    if df is None or df.empty:
+        return {name: 0.0 for name in outlet_names}
+    for name in outlet_names:
+        seg = vessel_map.vessel_for(name)
+        seg_data = df[df['name'] == seg]
+        if seg_data.empty:
             flow_dist[name] = 0.0
-
+            continue
+        flow_value = _last_cycle(seg_data, cycle_duration)['flow_out'].mean()
+        if np.isnan(flow_value) or np.isinf(flow_value):
+            flow_value = 0.0
+        flow_dist[name] = abs(flow_value)
     return flow_dist
 
 
-def check_convergence(flow_splits, pressure_targets, df, outlet_names, cycle_duration):
+def check_convergence(flow_splits, pressure_targets, df, outlet_names, vessel_map, cycle_duration):
     """
     Check if optimization has converged (v3).
 
@@ -899,7 +875,7 @@ def check_convergence(flow_splits, pressure_targets, df, outlet_names, cycle_dur
 
     # ======================== Check Flow Splits ========================
     # Adaptive tolerance: 10% for large vessels (>=15% flow), 25% for small vessels (<15% flow)
-    flow_dist = extract_flow_distribution(df, outlet_names, cycle_duration)
+    flow_dist = extract_flow_distribution(df, outlet_names, vessel_map, cycle_duration)
     total_flow = sum(flow_dist.values())
 
     for name in outlet_names:
@@ -925,9 +901,9 @@ def check_convergence(flow_splits, pressure_targets, df, outlet_names, cycle_dur
     # ======================== Check Pressure Targets ========================
     for cap, targets in pressure_targets.items():
         if cap == 'inlet':
-            metrics = extract_inlet_metrics(df, cycle_duration)
+            metrics = extract_inlet_metrics(df, vessel_map, cycle_duration)
         else:
-            metrics = extract_outlet_metrics(df, cap, outlet_names, cycle_duration)
+            metrics = extract_outlet_metrics(df, cap, vessel_map, cycle_duration)
 
         achieved_max = cgs_to_mmhg(metrics['max_pressure'])
         achieved_min = cgs_to_mmhg(metrics['min_pressure'])
@@ -961,7 +937,7 @@ def check_convergence(flow_splits, pressure_targets, df, outlet_names, cycle_dur
 # ========================================================================
 # ============================ Error Computation Helpers (v4) ============
 
-def compute_flow_error(df, flow_splits, outlet_names, cycle_duration):
+def compute_flow_error(df, flow_splits, outlet_names, vessel_map, cycle_duration):
     """
     Compute flow split error (sum of squared percentage errors).
 
@@ -976,7 +952,7 @@ def compute_flow_error(df, flow_splits, outlet_names, cycle_duration):
     if df is None or df.empty:
         return LARGE_ERROR
 
-    flow_dist = extract_flow_distribution(df, outlet_names, cycle_duration)
+    flow_dist = extract_flow_distribution(df, outlet_names, vessel_map, cycle_duration)
     total_flow = sum(flow_dist.values())
 
     # Handle zero total flow
@@ -998,7 +974,7 @@ def compute_flow_error(df, flow_splits, outlet_names, cycle_duration):
     return _safe_value(flow_error, LARGE_ERROR)
 
 
-def compute_pressure_error(df, pressure_targets, outlet_names, cycle_duration):
+def compute_pressure_error(df, pressure_targets, outlet_names, vessel_map, cycle_duration):
     """
     Compute pressure error (sum of squared mmHg errors).
     Handles optional mean pressure.
@@ -1019,9 +995,9 @@ def compute_pressure_error(df, pressure_targets, outlet_names, cycle_duration):
     for cap, targets in pressure_targets.items():
         try:
             if cap == 'inlet':
-                metrics = extract_inlet_metrics(df, cycle_duration)
+                metrics = extract_inlet_metrics(df, vessel_map, cycle_duration)
             else:
-                metrics = extract_outlet_metrics(df, cap, outlet_names, cycle_duration)
+                metrics = extract_outlet_metrics(df, cap, vessel_map, cycle_duration)
 
             # Extract and validate values
             max_p = _safe_value(cgs_to_mmhg(metrics.get('max_pressure', 0)), 0.0)
@@ -1103,6 +1079,7 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
     except (FileNotFoundError, ValueError) as e:
         print_error(str(e))
         raise
+    vessel_map = VesselMap(base_config, outlet_names)
 
     # ============================================================
     # PHASE 1: Optimize for pressure (find correct total R and C)
@@ -1135,25 +1112,18 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
 
         # Enforce bounds
         R_total = np.clip(R_total, 500, 100000)
-        C = np.clip(C, 0.0001, 0.1)
+        C = np.clip(C, C_TOTAL_MIN, C_TOTAL_MAX)
 
         R_values = distribute_R(R_total)
 
-        # Build RCR params and run simulation
-        rcr_params = {}
-        for i, name in enumerate(outlet_names):
-            rcr_params[name] = {
-                'Rp': default_Rp_ratio * R_values[i],
-                'C': C,
-                'Rd': (1 - default_Rp_ratio) * R_values[i]
-            }
+        rcr_params = build_rcr_params(R_values, C, outlet_names, flow_splits)
 
         # Use in-memory config (thread-safe, no file I/O)
         config = update_config_in_memory(base_config, rcr_params, outlet_names)
 
         try:
             df = run_0d_simulation_in_memory(config)
-            pressure_error = compute_pressure_error(df, pressure_targets, outlet_names, cycle_duration)
+            pressure_error = compute_pressure_error(df, pressure_targets, outlet_names, vessel_map, cycle_duration)
 
             # Reset consecutive failures on success
             consecutive_failures[0] = 0
@@ -1180,7 +1150,7 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
 
     # Initial guess and bounds for Phase 1
     x0_phase1 = [5000.0, 0.005]  # R_total, C
-    bounds_phase1 = [(500, 100000), (0.0001, 0.1)]
+    bounds_phase1 = [(500, 100000), (C_TOTAL_MIN, C_TOTAL_MAX)]
 
     print_info("Initial R_total: 5000, Initial C: 0.005")
     print_info("Running Phase 1 optimization...")
@@ -1211,7 +1181,7 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
     R_total_opt = _safe_value(R_total_opt, 5000.0)
     C_opt = _safe_value(C_opt, 0.005)
     R_total_opt = np.clip(R_total_opt, 500, 100000)
-    C_opt = np.clip(C_opt, 0.0001, 0.1)
+    C_opt = np.clip(C_opt, C_TOTAL_MIN, C_TOTAL_MAX)
 
     print_status("Phase 1 complete!")
     print_info("Optimal R_total: " + str(round(R_total_opt, 1)))
@@ -1272,19 +1242,12 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
 
         # Enforce bounds on R_total and C
         R_total = np.clip(_safe_value(R_total, R_total_opt), 500, 100000)
-        C = np.clip(_safe_value(C, C_opt), 0.0001, 0.1)
+        C = np.clip(_safe_value(C, C_opt), C_TOTAL_MIN, C_TOTAL_MAX)
 
         # Compute R values from allocation
         R_values = R_total * allocation
 
-        # Build RCR params
-        rcr_params = {}
-        for i, name in enumerate(outlet_names):
-            rcr_params[name] = {
-                'Rp': default_Rp_ratio * R_values[i],
-                'C': C,
-                'Rd': (1 - default_Rp_ratio) * R_values[i]
-            }
+        rcr_params = build_rcr_params(R_values, C, outlet_names, flow_splits)
 
         # Use in-memory config (thread-safe, no file I/O)
         config = update_config_in_memory(base_config, rcr_params, outlet_names)
@@ -1293,10 +1256,10 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
             df = run_0d_simulation_in_memory(config)
 
             # Flow error (primary objective in Phase 2)
-            flow_error = compute_flow_error(df, flow_splits, outlet_names, cycle_duration)
+            flow_error = compute_flow_error(df, flow_splits, outlet_names, vessel_map, cycle_duration)
 
             # Pressure error (also important, equal weight now)
-            pressure_error = compute_pressure_error(df, pressure_targets, outlet_names, cycle_duration)
+            pressure_error = compute_pressure_error(df, pressure_targets, outlet_names, vessel_map, cycle_duration)
 
             # Equal weight for both objectives in Phase 2
             total_error = flow_error + pressure_error
@@ -1369,7 +1332,7 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
 
         # Apply bounds
         final_R_total = np.clip(final_R_total, 500, 100000)
-        final_C = np.clip(final_C, 0.0001, 0.1)
+        final_C = np.clip(final_C, C_TOTAL_MIN, C_TOTAL_MAX)
 
         R_values_final = final_R_total * final_allocation
         stop_reason = 'completed'
@@ -1398,7 +1361,7 @@ def run_two_phase_optimization(flow_splits, outlet_names, pressure_targets,
 # ============================ Optimization ==============================
 
 def objective_function(x, outlet_names, flow_splits, pressure_targets,
-                      base_config, cycle_duration, iteration_counter):
+                      base_config, vessel_map, cycle_duration, iteration_counter):
     """
     Objective function for optimization (v3).
 
@@ -1406,8 +1369,8 @@ def objective_function(x, outlet_names, flow_splits, pressure_targets,
     Uses IN-MEMORY config to avoid file I/O race conditions.
 
     Args:
-        x: array [R_0, R_1, ..., R_{N-1}, C]  # N+1 parameters
-           N individual R values + 1 shared C
+        x: array [R_0, R_1, ..., R_{N-1}, C_total]  # N+1 parameters
+           N individual R values + 1 total C (split among outlets by flow fraction)
         outlet_names: list of outlet names
         flow_splits: dict {outlet_name: target_flow_percentage}
         pressure_targets: dict {cap_name: {'max': x, 'min': y, 'mean': z}} in mmHg
@@ -1421,17 +1384,9 @@ def objective_function(x, outlet_names, flow_splits, pressure_targets,
     """
     N = len(outlet_names)
     R_values = x[:N]    # Individual R for each outlet
-    C_value = x[N]      # Shared C for all outlets
+    C_value = x[N]      # TOTAL compliance, shared out by flow split
 
-    # Generate RCR parameters from individual R values
-    rcr_params = {}
-    for i, name in enumerate(outlet_names):
-        R_total = R_values[i]
-        rcr_params[name] = {
-            'Rp': default_Rp_ratio * R_total,
-            'C': C_value,
-            'Rd': (1 - default_Rp_ratio) * R_total
-        }
+    rcr_params = build_rcr_params(R_values, C_value, outlet_names, flow_splits)
 
     # Use in-memory config (thread-safe, no file I/O)
     config = update_config_in_memory(base_config, rcr_params, outlet_names)
@@ -1443,7 +1398,7 @@ def objective_function(x, outlet_names, flow_splits, pressure_targets,
         # ============================================================
         # FLOW SPLIT ERROR (CRITICAL - was missing before!)
         # ============================================================
-        flow_dist = extract_flow_distribution(df, outlet_names, cycle_duration)
+        flow_dist = extract_flow_distribution(df, outlet_names, vessel_map, cycle_duration)
         total_flow = sum(flow_dist.values())
 
         flow_error = 0.0
@@ -1458,9 +1413,9 @@ def objective_function(x, outlet_names, flow_splits, pressure_targets,
         pressure_error = 0.0
         for cap, targets in pressure_targets.items():
             if cap == 'inlet':
-                metrics = extract_inlet_metrics(df, cycle_duration)
+                metrics = extract_inlet_metrics(df, vessel_map, cycle_duration)
             else:
-                metrics = extract_outlet_metrics(df, cap, outlet_names, cycle_duration)
+                metrics = extract_outlet_metrics(df, cap, vessel_map, cycle_duration)
 
             # Compute error in mmHg^2
             pressure_error += (cgs_to_mmhg(metrics['max_pressure']) - targets['max']) ** 2
@@ -1521,7 +1476,7 @@ def run_optimization_scipy(flow_splits, outlet_names, pressure_targets,
     """
     Run optimization using scipy L-BFGS-B (v3).
 
-    Optimizes N+1 parameters: N individual R values + 1 shared C.
+    Optimizes N+1 parameters: N individual R values + 1 total C (distributed by flow split).
     Stops on timeout or convergence (all values within 10% of targets).
 
     Uses IN-MEMORY config to avoid file I/O race conditions with scipy's
@@ -1540,17 +1495,18 @@ def run_optimization_scipy(flow_splits, outlet_names, pressure_targets,
     # Load base config ONCE into memory to avoid file I/O race conditions
     with open(json_path, 'r') as f:
         base_config = json.load(f)
+    vessel_map = VesselMap(base_config, outlet_names)
 
     # Initial guess: R values from flow splits, C in middle of range
     initial_R = compute_initial_R_values(flow_splits, outlet_names, base_R=1000)
-    initial_C = 0.001  # Middle of bounds in log space (0.0001 to 0.1)
+    initial_C = C_TOTAL_INIT  # total compliance, distributed by flow split
     x0 = initial_R + [initial_C]
 
     print_info("Initial R values: " + ", ".join([str(round(r, 1)) for r in initial_R]))
     print_info("Initial C: " + str(initial_C))
 
     # N+1 bounds: N R values + 1 C value
-    bounds = [(100, 50000)] * N + [(0.0001, 0.1)]
+    bounds = [(100, 50000)] * N + [(C_TOTAL_MIN, C_TOTAL_MAX)]
 
     iteration_counter = [0]
     converged_early = [False]
@@ -1569,22 +1525,13 @@ def run_optimization_scipy(flow_splits, outlet_names, pressure_targets,
         if iteration_counter[0] % 10 == 0 and iteration_counter[0] > 0:
             try:
                 # Generate RCR params and run simulation to check convergence
-                R_values = x[:N]
-                C_value = x[N]
-                rcr_params = {}
-                for i, name in enumerate(outlet_names):
-                    R_total = R_values[i]
-                    rcr_params[name] = {
-                        'Rp': default_Rp_ratio * R_total,
-                        'C': C_value,
-                        'Rd': (1 - default_Rp_ratio) * R_total
-                    }
+                rcr_params = build_rcr_params(x[:N], x[N], outlet_names, flow_splits)
                 # Use in-memory config for convergence check
                 config = update_config_in_memory(base_config, rcr_params, outlet_names)
                 df = run_0d_simulation_in_memory(config)
 
                 converged, details = check_convergence(
-                    flow_splits, pressure_targets, df, outlet_names, cycle_duration
+                    flow_splits, pressure_targets, df, outlet_names, vessel_map, cycle_duration
                 )
 
                 if converged:
@@ -1603,7 +1550,7 @@ def run_optimization_scipy(flow_splits, outlet_names, pressure_targets,
             objective_function,
             x0,
             args=(outlet_names, flow_splits, pressure_targets,
-                  base_config, cycle_duration, iteration_counter),
+                  base_config, vessel_map, cycle_duration, iteration_counter),
             method='L-BFGS-B',
             bounds=bounds,
             callback=callback,
@@ -1637,7 +1584,7 @@ def run_optimization_cma(flow_splits, outlet_names, pressure_targets,
     1. Quick Phase 0: Find good R_total and C using gradient-based optimization
     2. Main Phase: CMA-ES global search starting from the better initial guess
 
-    Optimizes N+1 parameters: N individual R values + 1 shared C.
+    Optimizes N+1 parameters: N individual R values + 1 total C (distributed by flow split).
     Stops on timeout or convergence (all values within 10% of targets).
 
     Uses IN-MEMORY config to avoid file I/O issues.
@@ -1671,6 +1618,7 @@ def run_optimization_cma(flow_splits, outlet_names, pressure_targets,
     except (FileNotFoundError, ValueError) as e:
         print_error(str(e))
         raise
+    vessel_map = VesselMap(base_config, outlet_names)
 
     # ================================================================
     # PHASE 0: Quick initial parameter estimation (find good R_total, C)
@@ -1698,7 +1646,7 @@ def run_optimization_cma(flow_splits, outlet_names, pressure_targets,
 
     # Phase 0 bounds in physical space
     R_total_min, R_total_max = 500, 100000
-    C_min_p0, C_max_p0 = 0.0001, 0.1
+    C_min_p0, C_max_p0 = C_TOTAL_MIN, C_TOTAL_MAX
 
     def phase0_transform(x_log):
         """Transform from log-space [0, 10] to physical space."""
@@ -1715,22 +1663,16 @@ def run_optimization_cma(flow_splits, outlet_names, pressure_targets,
 
         R_values = distribute_R_phase0(R_total)
 
-        rcr_params = {}
-        for i, name in enumerate(outlet_names):
-            rcr_params[name] = {
-                'Rp': default_Rp_ratio * R_values[i],
-                'C': C,
-                'Rd': (1 - default_Rp_ratio) * R_values[i]
-            }
+        rcr_params = build_rcr_params(R_values, C, outlet_names, flow_splits)
 
         config = update_config_in_memory(base_config, rcr_params, outlet_names)
 
         try:
             df = run_0d_simulation_in_memory(config)
             # Focus primarily on pressure for Phase 0
-            pressure_error = compute_pressure_error(df, pressure_targets, outlet_names, cycle_duration)
+            pressure_error = compute_pressure_error(df, pressure_targets, outlet_names, vessel_map, cycle_duration)
             # Add small flow error to guide in right direction
-            flow_error = compute_flow_error(df, flow_splits, outlet_names, cycle_duration)
+            flow_error = compute_flow_error(df, flow_splits, outlet_names, vessel_map, cycle_duration)
             total_error = pressure_error + 0.1 * flow_error
 
             phase0_iter[0] += 1
@@ -1784,7 +1726,7 @@ def run_optimization_cma(flow_splits, outlet_names, pressure_targets,
     # Transform functions: map [0, 10] to physical space
     # Now centered around Phase 0 results
     R_min, R_max = 100, 50000
-    C_min, C_max = 0.0001, 0.1
+    C_min, C_max = C_TOTAL_MIN, C_TOTAL_MAX
 
     def transform_x(x_normalized):
         x_physical = []
@@ -1830,7 +1772,7 @@ def run_optimization_cma(flow_splits, outlet_names, pressure_targets,
             x_physical = transform_x(x_normalized)
             error = objective_function(
                 x_physical, outlet_names, flow_splits, pressure_targets,
-                base_config, cycle_duration, iteration_counter
+                base_config, vessel_map, cycle_duration, iteration_counter
             )
             # Reset consecutive failures on success
             if error < LARGE_ERROR:
@@ -1904,22 +1846,13 @@ def run_optimization_cma(flow_splits, outlet_names, pressure_targets,
             if iteration_counter[0] % 10 == 0 and iteration_counter[0] > 0:
                 try:
                     x_best = transform_x(es.result.xbest)
-                    R_values = x_best[:N]
-                    C_value = x_best[N]
-                    rcr_params = {}
-                    for i, name in enumerate(outlet_names):
-                        R_total = R_values[i]
-                        rcr_params[name] = {
-                            'Rp': default_Rp_ratio * R_total,
-                            'C': C_value,
-                            'Rd': (1 - default_Rp_ratio) * R_total
-                        }
+                    rcr_params = build_rcr_params(x_best[:N], x_best[N], outlet_names, flow_splits)
                     # Use in-memory config for convergence check
                     config = update_config_in_memory(base_config, rcr_params, outlet_names)
                     df = run_0d_simulation_in_memory(config)
 
                     converged, details = check_convergence(
-                        flow_splits, pressure_targets, df, outlet_names, cycle_duration
+                        flow_splits, pressure_targets, df, outlet_names, vessel_map, cycle_duration
                     )
 
                     if converged:
@@ -1987,6 +1920,17 @@ def main():
         print_info("The main workflow will handle this automatically.")
         sys.exit(1)
 
+    # ======================== Outlet <-> vessel mapping ========================
+    try:
+        vessel_map = VesselMap(load_json_config(json_path), outlet_names)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print_info("Outlet -> 0D vessel mapping (read from solver input):")
+    print("    inlet  -> " + vessel_map.inlet_vessel)
+    for k, name in enumerate(outlet_names):
+        print("    " + name + " -> " + vessel_map.outlet_vessel[name] + " (RCR_" + str(k) + ")")
+
     # ======================== Get User Inputs (v3 UI) ========================
     flow_splits, pressure_targets, timeout_min, optimizer = get_user_inputs(outlet_names)
 
@@ -2024,7 +1968,7 @@ def main():
     print("")
 
     print_info("R bounds: [100, 50000] CGS")
-    print_info("C bounds: [0.0001, 0.1] CGS")
+    print_info("C_total bounds: [" + str(C_TOTAL_MIN) + ", " + str(C_TOTAL_MAX) + "] CGS (distributed to outlets by flow split)")
     print_info("Timeout: " + str(timeout_min) + " minutes")
     print("")
 
@@ -2042,7 +1986,7 @@ def main():
         else:
             # CMA-ES uses single-phase (more robust)
             print_info("Using CMA-ES single-phase optimization")
-            print_info("Optimizing " + str(len(outlet_names)) + " R values + 1 C value (" +
+            print_info("Optimizing " + str(len(outlet_names)) + " R values + 1 total C (" +
                       str(len(outlet_names) + 1) + " parameters)")
 
             x_best, final_error, n_iters, stop_reason = run_optimization_cma(
@@ -2077,20 +2021,13 @@ def main():
     else:
         print_status("Optimization completed")
     print("    Total iterations: " + str(n_iters))
-    print("    Optimized C: " + str(round(C_final, 6)))
+    print("    Optimized total C: " + str(round(C_final, 6)) + " (distributed to outlets by flow split)")
 
     # ======================== Generate Final Parameters ========================
     print_section_header("GENERATING FINAL RCR PARAMETERS")
 
     # Generate RCR params from optimized R values and C
-    final_rcr_params = {}
-    for i, name in enumerate(outlet_names):
-        R_total = R_values_final[i]
-        final_rcr_params[name] = {
-            'Rp': default_Rp_ratio * R_total,
-            'C': C_final,
-            'Rd': (1 - default_Rp_ratio) * R_total
-        }
+    final_rcr_params = build_rcr_params(R_values_final, C_final, outlet_names, flow_splits)
 
     print_info("Optimized RCR parameters:")
     print("")
@@ -2116,7 +2053,7 @@ def main():
 
         # Use check_convergence for full verification
         converged, details = check_convergence(
-            flow_splits, pressure_targets, df, outlet_names, cycle_duration
+            flow_splits, pressure_targets, df, outlet_names, vessel_map, cycle_duration
         )
 
         # Show pressure verification for each targeted cap

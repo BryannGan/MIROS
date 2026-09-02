@@ -16,85 +16,10 @@ import os
 from __init__ import *
 
 
-# ========================================================================
-# ============================ CFL-based Timestep Computation ============
-# ========================================================================
-
-def compute_timesteps_from_cfl(peak_flow, hr, cfl=0.9, min_timesteps=1200):
-    """
-    Compute the number of timesteps per cardiac cycle based on CFL constraint.
-
-    For implicit solvers, CFL = 0.9 is typically stable.
-
-    CFL = velocity * dt / dx
-
-    Args:
-        peak_flow: Peak flow rate in mL/s
-        hr: Heart rate in bpm
-        cfl: Target CFL number (default 0.9 for implicit solver)
-        min_timesteps: Minimum timesteps for numerical accuracy (default 1200)
-
-    Returns:
-        int: Number of timesteps per cardiac cycle
-    """
-    # Read cap areas from preprocessing
-    cap_areas_file = os.path.join(caps_folder, 'cap_areas.txt')
-
-    min_cap_area = None
-    if os.path.exists(cap_areas_file):
-        try:
-            with open(cap_areas_file, 'r') as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) >= 2:
-                        try:
-                            area = float(parts[1])
-                            if min_cap_area is None or area < min_cap_area:
-                                min_cap_area = area
-                        except ValueError:
-                            continue
-        except Exception as e:
-            print(f"  [Warning] Could not read cap areas: {e}")
-
-    # If we couldn't get cap areas, use a conservative default
-    if min_cap_area is None or min_cap_area <= 0:
-        print("  [Info] Cap areas not available, using default timesteps")
-        return max(min_timesteps, 2000)
-
-    # Compute peak velocity (flow / area)
-    # Convert: flow in mL/s = cm³/s, area in cm² -> velocity in cm/s
-    peak_velocity = abs(peak_flow) / min_cap_area  # cm/s
-
-    # Characteristic length scale (approximate from cap area)
-    # dx ~ sqrt(area) gives a rough mesh scale
-    dx = np.sqrt(min_cap_area)  # cm
-
-    # Cycle duration
-    cycle_duration = 60.0 / hr  # seconds
-
-    # CFL = velocity * dt / dx
-    # dt = CFL * dx / velocity
-    # n_timesteps = cycle_duration / dt = cycle_duration * velocity / (CFL * dx)
-
-    if peak_velocity > 0:
-        dt_cfl = cfl * dx / peak_velocity
-        n_timesteps = int(np.ceil(cycle_duration / dt_cfl))
-    else:
-        n_timesteps = min_timesteps
-
-    # Ensure minimum timesteps for accuracy
-    n_timesteps = max(n_timesteps, min_timesteps)
-
-    # Round up to nearest 100 for cleaner numbers
-    n_timesteps = int(np.ceil(n_timesteps / 100) * 100)
-
-    print(f"  -> Timesteps computed automatically based on CFL constraint:")
-    print(f"     Peak velocity: {peak_velocity:.1f} cm/s")
-    print(f"     Characteristic length: {dx:.3f} cm")
-    print(f"     CFL number: {cfl}")
-    print(f"     Timesteps per cycle: {n_timesteps}")
-
-    return n_timesteps
+# Number of time points per cardiac cycle written to the inflow file.
+# The 0D and 1D solvers are implicit, so this is a resolution choice rather
+# than a stability (CFL) constraint; 1200 resolves a cardiac waveform well.
+DEFAULT_TIMESTEPS_PER_CYCLE = 1200
 
 class DraggablePoints:
     def __init__(self, ax, x, y, line, update_callback):
@@ -180,7 +105,7 @@ def launch(flow_lower=-100, flow_upper=500):
 
     # prepare variables to capture validated inputs
     hr_val = None
-    ts_val = 'auto'  # Default to auto
+    ts_val = DEFAULT_TIMESTEPS_PER_CYCLE
 
     # --- HR box ---
     axbox1 = plt.axes([0.2, 0.08, 0.15, 0.04])
@@ -199,44 +124,38 @@ def launch(flow_lower=-100, flow_upper=500):
             print(f"[HR] invalid input `{text}`: {e}. Please enter a positive number.")
     text_box1.on_submit(submit_hr)
 
-    # --- Timesteps box (auto or user-defined) ---
+    # --- Timesteps box ---
     axbox2 = plt.axes([0.65, 0.08, 0.12, 0.04])
-    text_box2 = TextBox(axbox2, '# Timesteps (auto or number):', initial='auto')
+    text_box2 = TextBox(axbox2, '# Timesteps per cycle:', initial=str(DEFAULT_TIMESTEPS_PER_CYCLE))
     def submit_ts(text):
         nonlocal ts_val
-        text = text.strip().lower()
-        if text == '' or text == 'auto':
-            ts_val = 'auto'
-            text_box2.text_disp.set_color('blue')
-            print("[Timesteps] Will be computed automatically based on CFL constraint.")
-        else:
-            try:
-                ts = int(text)
-                if ts <= 0:
-                    raise ValueError("Must be > 0.")
-                if ts < 1200:
-                    print("[Timesteps] Warning: recommended >= 1200 for good resolution.")
-                ts_val = ts
-                text_box2.text_disp.set_color('black')
-            except Exception as e:
-                ts_val = 'auto'
-                text_box2.text_disp.set_color('red')
-                print(f"[Timesteps] invalid input `{text}`: {e}. Using auto.")
+        text = text.strip()
+        try:
+            ts = int(text) if text else DEFAULT_TIMESTEPS_PER_CYCLE
+            if ts <= 0:
+                raise ValueError("Must be > 0.")
+            if ts < 600:
+                print("[Timesteps] Warning: fewer than 600 points per cycle may under-resolve the waveform.")
+            ts_val = ts
+            text_box2.text_disp.set_color('black')
+        except Exception as e:
+            ts_val = DEFAULT_TIMESTEPS_PER_CYCLE
+            text_box2.text_disp.set_color('red')
+            print(f"[Timesteps] invalid input `{text}`: {e}. Using {DEFAULT_TIMESTEPS_PER_CYCLE}.")
     text_box2.on_submit(submit_ts)
 
     plt.show()
     return hr_val, ts_val, line
 
 
-def postprocess_inflow(hr, ts_val, curve_line, peak_flow=None):
+def postprocess_inflow(hr, ts_val, curve_line):
     """
-    Process the inflow waveform.
+    Resample the drawn waveform onto one cardiac cycle.
 
     Args:
         hr: Heart rate in bpm
-        ts_val: Timesteps - either 'auto' or an integer
+        ts_val: Time points per cycle (int)
         curve_line: Matplotlib line object with waveform data
-        peak_flow: Expected peak flow for CFL computation (optional)
     """
     # parse inputs with defaults
     hr = int(hr) if hr else 60
@@ -246,16 +165,8 @@ def postprocess_inflow(hr, ts_val, curve_line, peak_flow=None):
     # extract your plotted data
     x_norm, y = curve_line.get_data()
 
-    # Get peak flow from the waveform if not provided
-    if peak_flow is None:
-        peak_flow = max(abs(y.max()), abs(y.min()))
-
-    # Determine timesteps - auto or user-defined
-    if ts_val == 'auto' or ts_val is None:
-        steps = compute_timesteps_from_cfl(peak_flow, hr)
-    else:
-        steps = int(ts_val)
-        print(f'  Timesteps per cycle: {steps} (user-defined)')
+    steps = int(ts_val) if ts_val else DEFAULT_TIMESTEPS_PER_CYCLE
+    print(f'  Timesteps per cycle: {steps}')
 
     # compute cycle length and time axis
     cyc = 60.0 / hr
@@ -279,10 +190,10 @@ def save_inflow_file(time, flow, filename='inflow_1d.flow'):
             f.write('{:.6f} {:.6f}\n'.format(t, q))
 
 
-def generate_inflow_file(flow_lower=-100, flow_upper=500, peak_flow=None):
+def generate_inflow_file(flow_lower=-100, flow_upper=500):
     """Generate inflow file using interactive GUI editor."""
     hr, ts_val, curve_line = launch(flow_lower, flow_upper)
-    time, flow = postprocess_inflow(hr, ts_val, curve_line, peak_flow)
+    time, flow = postprocess_inflow(hr, ts_val, curve_line)
     save_inflow_file(time, flow)
 
 
@@ -356,11 +267,11 @@ if __name__ == '__main__':
         print("  Opening interactive waveform editor...")
         print("  -> Drag the red control points to shape your flow waveform")
         print("  -> Enter heart rate in the text box")
-        print("  -> Timesteps: leave as 'auto' for CFL-based computation, or enter a number")
+        print("  -> Time steps per cycle: default " + str(DEFAULT_TIMESTEPS_PER_CYCLE) + "; change only if you need finer output")
         print("  -> Close the window when done")
         print("")
 
-        generate_inflow_file(flow_lower, flow_upper, peak_flow)
+        generate_inflow_file(flow_lower, flow_upper)
         print("\n  Inflow waveform saved to: {}".format(
             os.path.join(master_folder, 'inflow_1d.flow')))
     else:

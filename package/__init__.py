@@ -12,7 +12,7 @@ Windows = False # are we running on Windows?
 # path to the 1D solver executable
 OneDSolv = '/usr/local/sv/oneDSolver/2025-07-02/bin/OneDSolver' # "c:/Program Files/SimVascular/svOneDSolver/2022-10-04/svOneDSolver.exe"
 # path to the python bin in your environment
-local_py_bin = '/home/bg2881/miniconda3/envs/LA_main/bin/python' # 'C:/Users/bygan/anaconda3/envs/MIROS/python.exe' # activate your env , and 'where python'
+local_py_bin = '/home/bg2881/miniconda3/envs/MIROS/bin/python' # 'C:/Users/bygan/anaconda3/envs/MIROS/python.exe' # activate your env , and 'where python'
 
 
 # path to the SimVascular python bin

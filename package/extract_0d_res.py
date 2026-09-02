@@ -13,6 +13,7 @@ Modified by Claude: Complete implementation for 0D result extraction
 
 import os
 import sys
+import json
 import numpy as np
 
 # ========================================================================
@@ -104,32 +105,44 @@ def get_segment_names(df):
     return df['name'].unique().tolist()
 
 
-def get_outlet_segments(df):
+def load_vessel_map():
     """
-    Identify outlet segments (last segment of each branch).
+    Map each outlet cap to the 0D vessel carrying its RCR boundary condition,
+    read from 0D_solver_input.json and centerlines_outlets.dat.
+
+    Returns (outlet_map, inlet_vessel) where outlet_map is an ordered dict
+    {cap_name: vessel_name}. Exits with a message if the files disagree.
     """
-    segments = get_segment_names(df)
+    json_path = os.path.join(master_folder, '0D_solver_input.json')
+    outlets_path = os.path.join(master_folder, 'centerlines_outlets.dat')
+    for p in (json_path, outlets_path):
+        if not os.path.exists(p):
+            print_error("Required file not found: " + p)
+            print_info("Run the 0D setup first so outlets can be mapped to vessels.")
+            sys.exit(1)
+    with open(json_path, 'r') as f:
+        config = json.load(f)
+    with open(outlets_path, 'r') as f:
+        caps = [line.strip() for line in f if line.strip()]
 
-    # Group by branch and find max segment number
-    outlets = []
-    branch_segments = {}
+    bc_to_vessel = {}
+    inlet_vessel = None
+    for v in config.get('vessels', []):
+        bcs = v.get('boundary_conditions') or {}
+        if 'outlet' in bcs:
+            bc_to_vessel[bcs['outlet']] = v['vessel_name']
+        if 'inlet' in bcs:
+            inlet_vessel = v['vessel_name']
 
-    for seg in segments:
-        parts = seg.split('_')
-        if len(parts) >= 2:
-            branch = parts[0]  # e.g., 'branch0'
-            seg_num = int(parts[1].replace('seg', ''))  # e.g., 3
-
-            if branch not in branch_segments:
-                branch_segments[branch] = []
-            branch_segments[branch].append((seg_num, seg))
-
-    # Get the last segment from each branch
-    for branch, segs in branch_segments.items():
-        segs.sort(key=lambda x: x[0])
-        outlets.append(segs[-1][1])  # Last segment
-
-    return outlets
+    outlet_map = {}
+    for k, cap in enumerate(caps):
+        bc_name = 'RCR_' + str(k)
+        if bc_name not in bc_to_vessel:
+            print_error("Outlet " + cap + " (" + bc_name + ") has no vessel in " + json_path)
+            print_info("centerlines_outlets.dat and the 0D solver input disagree; regenerate the 0D setup.")
+            sys.exit(1)
+        outlet_map[cap] = bc_to_vessel[bc_name]
+    return outlet_map, inlet_vessel
 
 
 def extract_segment_data(df, segment_name):
@@ -146,7 +159,8 @@ def extract_last_cycle(df, cycle_duration):
     Extract only the last cardiac cycle from the results.
     """
     max_time = df['time'].max()
-    num_cycles = int(max_time / cycle_duration)
+    # floor with a small tolerance so 5.4 / 0.6 counts as 9 cycles, not 8
+    num_cycles = int(np.floor(max_time / cycle_duration + 1e-6))
 
     if num_cycles >= 1:
         start_time = (num_cycles - 1) * cycle_duration
@@ -218,12 +232,14 @@ def plot_segment_waveforms(seg_data, segment_name, save_path=None):
     return fig
 
 
-def plot_all_outlets(df, outlets, cycle_duration, save_path=None):
+def plot_all_outlets(df, outlets, cycle_duration, save_path=None, labels=None):
     """
     Plot all outlet waveforms on a single figure.
     Pressure is displayed in mmHg for easier interpretation.
+    labels: optional {vessel_name: cap_name} used in titles.
     """
     n_outlets = len(outlets)
+    labels = labels or {}
 
     # Create subplots
     fig, axes = plt.subplots(n_outlets, 2, figsize=(14, 3*n_outlets))
@@ -238,13 +254,14 @@ def plot_all_outlets(df, outlets, cycle_duration, save_path=None):
         # Flow
         axes[i, 0].plot(seg_data['time'], seg_data['flow_out'], 'b-', linewidth=1.5)
         axes[i, 0].set_ylabel('Flow (mL/s)')
-        axes[i, 0].set_title(outlet + ' - Flow')
+        title = (labels[outlet] + ' (' + outlet + ')') if outlet in labels else outlet
+        axes[i, 0].set_title(title + ' - Flow')
         axes[i, 0].grid(True, alpha=0.3)
 
         # Pressure (convert to mmHg)
         axes[i, 1].plot(seg_data['time'], cgs_to_mmhg(seg_data['pressure_out']), 'r-', linewidth=1.5)
         axes[i, 1].set_ylabel('Pressure (mmHg)')
-        axes[i, 1].set_title(outlet + ' - Pressure')
+        axes[i, 1].set_title(title + ' - Pressure')
         axes[i, 1].grid(True, alpha=0.3)
 
     # Add x-labels to bottom row
@@ -260,24 +277,27 @@ def plot_all_outlets(df, outlets, cycle_duration, save_path=None):
     return fig
 
 
-def save_summary_statistics(df, outlets, cycle_duration, output_path):
+def save_summary_statistics(df, outlets, cycle_duration, output_path, labels=None):
     """
     Save summary statistics to a CSV file.
     Pressure values are in mmHg for easier interpretation.
+    labels: optional {vessel_name: cap_name}; written as the 'outlet' column.
     """
+    labels = labels or {}
     stats_list = []
 
     for outlet in outlets:
         seg_data = extract_segment_data(df, outlet)
         seg_data = extract_last_cycle(seg_data, cycle_duration)
         stats = compute_statistics(seg_data)
+        stats['outlet'] = labels.get(outlet, '')
         stats['segment'] = outlet
         stats_list.append(stats)
 
     stats_df = pd.DataFrame(stats_list)
 
     # Reorder columns (pressure now in mmHg)
-    cols = ['segment', 'mean_flow_in', 'mean_flow_out', 'max_flow_in', 'min_flow_in',
+    cols = ['outlet', 'segment', 'mean_flow_in', 'mean_flow_out', 'max_flow_in', 'min_flow_in',
             'mean_pressure_in_mmHg', 'mean_pressure_out_mmHg', 'max_pressure_in_mmHg', 'min_pressure_in_mmHg']
     stats_df = stats_df[cols]
 
@@ -304,11 +324,14 @@ if __name__ == "__main__":
 
     # Get segment info
     segments = get_segment_names(df)
-    outlets = get_outlet_segments(df)
+    outlet_map, inlet_vessel = load_vessel_map()
+    outlets = list(outlet_map.values())
+    labels = {vessel: cap for cap, vessel in outlet_map.items()}
     cycle_duration = get_cardiac_cycle_duration()
 
     print_info("Total segments: " + str(len(segments)))
-    print_info("Outlet segments: " + str(len(outlets)))
+    print_info("Inlet vessel: " + str(inlet_vessel))
+    print_info("Outlets (from solver input): " + ", ".join(cap + " -> " + v for cap, v in outlet_map.items()))
     print_info("Cardiac cycle duration: " + str(cycle_duration) + " s")
     print_info("Simulation time: " + str(df['time'].min()) + " to " + str(df['time'].max()) + " s")
 
@@ -365,7 +388,7 @@ if __name__ == "__main__":
     # Save statistics
     stats_path = os.path.join(res_folder_0D, '0D_statistics.csv')
     print_info("Computing statistics...")
-    stats_df = save_summary_statistics(df, target_segments, cycle_duration, stats_path)
+    stats_df = save_summary_statistics(df, target_segments, cycle_duration, stats_path, labels)
 
     # Display summary
     print("\n" + "-" * 70)
@@ -385,7 +408,7 @@ if __name__ == "__main__":
             all_outlets_path = None
 
         print_info("Plotting outlet waveforms...")
-        fig = plot_all_outlets(df, outlets, cycle_duration, all_outlets_path)
+        fig = plot_all_outlets(df, outlets, cycle_duration, all_outlets_path, labels)
 
         if show_plots:
             plt.show()

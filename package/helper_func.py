@@ -248,27 +248,18 @@ def compute_surface_area(polydata: vtk.vtkPolyData) -> float:
 
 def write_helper_txt(master_folder,caps_folder):
     helper_txt = os.path.join(master_folder, 'model_info.txt')
-    for i in range(len(os.listdir(caps_folder))):
-        cap_file = os.listdir(caps_folder)[i]
-        if cap_file.startswith('cap_') and cap_file.endswith('.vtp'):
-            cap_polydata = read_surface(os.path.join(caps_folder, cap_file), 'vtp', None)
-            area = compute_surface_area(cap_polydata)
-            cap_name = os.path.splitext(cap_file)[0]
-            if i == 0:
-                write_text(
-                                helper_txt,
-                                'Cap {} area: {}\n'.format(cap_name, area),
-                                'w'
-                                )
-            else:
-                write_text(
-                                helper_txt,
-                                'Cap {} area: {}\n'.format(cap_name, area),
-                                'a'
-                                )
-    write_text(helper_txt, 'for more information about rcr, consult other resources such as https://www.youtube.com/watch?v=3QRYhTRz9nw', mode = 'a')
-    write_text(helper_txt, 'total Resistance = R_proximal + R_distal = P_mean/Q_mean', mode = 'a')
-    write_text(helper_txt, 'characteristic fill time of compliance = C * R_distal', mode = 'a')
+    cap_files = sorted(f for f in os.listdir(caps_folder) if f.startswith('cap_') and f.endswith('.vtp'))
+    lines = []
+    for cap_file in cap_files:
+        cap_polydata = read_surface(os.path.join(caps_folder, cap_file), 'vtp', None)
+        area = compute_surface_area(cap_polydata)
+        lines.append('Cap {} area: {}'.format(os.path.splitext(cap_file)[0], area))
+    lines += [
+        'for more information about rcr, consult other resources such as https://www.youtube.com/watch?v=3QRYhTRz9nw',
+        'total Resistance = R_proximal + R_distal = P_mean/Q_mean',
+        'characteristic fill time of compliance = C * R_distal',
+    ]
+    write_text(helper_txt, '\n'.join(lines) + '\n', 'w')
     return helper_txt
 
 def get_number_of_timesteps(n_cyc,inflow_file):
