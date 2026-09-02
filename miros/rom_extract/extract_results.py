@@ -279,7 +279,8 @@ def set_parameters(**kwargs):
         logger.info("Walls mesh file: %s" % params.walls_mesh_file)
 
     if params.model_order == 1:
-        if not (params.outlet_segments and params.all_segments) and (params.segment_names == None):
+        # MIROS: upstream wrote `and`, which warns whenever not BOTH options are set
+        if not (params.outlet_segments or params.all_segments) and (params.segment_names == None):
             logger.warning("No segment options are set therefore no segment data will be read.")
 
     return params 

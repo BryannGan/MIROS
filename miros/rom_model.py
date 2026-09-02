@@ -67,8 +67,9 @@ class RomOutputs:
     cap_areas: Dict[str, float]
 
 
-def _parameters(out_dir: Path, boundary_dir: Path, outlets_file: Path, rcrt: Path,
-                inflow: Path, s: RomSettings, model_order: int) -> Parameters:
+def rom_parameters(out_dir: Path, boundary_dir: Path, outlets_file: Path, rcrt: Path,
+                   inflow: Path, s: RomSettings, model_order: int) -> Parameters:
+    """Parameters for the vendored ROM builder (model_order 0 or 1)."""
     P = Parameters()
     P.output_directory = str(out_dir)
     P.boundary_surfaces_dir = str(boundary_dir)
@@ -140,10 +141,12 @@ def build_rom_model(surface, out_dir, inflow, inlet: Optional[str] = None,
     boundary_dir = out_dir / 'caps_and_wall'
     C.write_boundary_dir(surf, caps_ordered, boundary_dir)
 
+    # the ROM reader requires the file to be called rcrt.dat next to the outputs
     rcrt_path = out_dir / 'rcrt.dat'
     if rcrt is None:
-        write_default_rcrt(tree.outlet_names, rcrt_path)
-        log("Wrote default rcrt.dat (placeholder values) for %d outlets" % len(tree.outlet_names))
+        if not rcrt_path.exists():        # never clobber tuned or user-provided values
+            write_default_rcrt(tree.outlet_names, rcrt_path)
+            log("Wrote default rcrt.dat (placeholder values) for %d outlets" % len(tree.outlet_names))
     elif Path(rcrt).resolve() != rcrt_path.resolve():
         rcrt_path.write_bytes(Path(rcrt).read_bytes())
 
@@ -151,13 +154,13 @@ def build_rom_model(surface, out_dir, inflow, inlet: Optional[str] = None,
     centerlines = Centerlines.from_polydata(cl_pd, tree.outlet_names)
     if write_0d:
         log("0D model")
-        P = _parameters(out_dir, boundary_dir, outlets_file, rcrt_path, Path(inflow), s, 0)
+        P = rom_parameters(out_dir, boundary_dir, outlets_file, rcrt_path, Path(inflow), s, 0)
         if not Mesh().generate(P, centerlines):
             raise RuntimeError("0D model generation failed")
         zerod = out_dir / P.solver_output_file
     if write_1d:
         log("1D model")
-        P = _parameters(out_dir, boundary_dir, outlets_file, rcrt_path, Path(inflow), s, 1)
+        P = rom_parameters(out_dir, boundary_dir, outlets_file, rcrt_path, Path(inflow), s, 1)
         if not Mesh().generate(P, centerlines):
             raise RuntimeError("1D model generation failed")
         oned = out_dir / P.solver_output_file

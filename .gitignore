@@ -26,3 +26,9 @@ test_Linux_Mac/remeshed_model.vtp
 test_Linux_Mac/extracted_centerlines.vtp
 test_Linux_Mac/1d_model.vtp
 optimization_testing/results/
+
+# build / test artefacts
+*.egg-info/
+.pytest_cache/
+build/
+dist/
