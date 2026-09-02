@@ -62,6 +62,8 @@ if not os.path.exists(Params0D.centerlines_output_file):
 else:
     Cl.read(Params0D, Params0D.centerlines_output_file)
     print_status("Centerlines loaded from: " + Params0D.centerlines_output_file)
+    # cached centerlines: make sure the outlets file lists caps in the centerline's column order
+    reconcile_outlet_order(Params0D.centerlines_output_file, caps_folder, Params0D.outlet_face_names_file)
 
 # Check if running in BC tuning mode (skip prompts)
 bc_tuning_mode = os.environ.get('MIROS_BC_TUNING_MODE', '0') == '1'

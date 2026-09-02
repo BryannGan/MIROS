@@ -58,6 +58,8 @@ if not os.path.exists(Params1D.centerlines_output_file):
 else:
     Cl.read(Params1D, Params1D.centerlines_output_file)
     print_status("Centerlines loaded from: " + Params1D.centerlines_output_file)
+    # cached centerlines: make sure the outlets file lists caps in the centerline's column order
+    reconcile_outlet_order(Params1D.centerlines_output_file, caps_folder, Params1D.outlet_face_names_file)
 
 # Modified by Claude: Improved user input section with clear formatting
 print("\n" + "-" * 70)

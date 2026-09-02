@@ -463,3 +463,66 @@ def load_config(path, inflow_file_path,P = None):
     P.linear_material_pressure  = phys.getfloat('linear_material_pressure')
 
     return P
+
+
+def reconcile_outlet_order(centerlines_file, caps_folder, outlets_dat):
+    """
+    Rewrite centerlines_outlets.dat so it lists the outlet caps in the order
+    of the centerline's CenterlineId columns.
+
+    sv_rom_simulation matches outlets to boundary conditions by POSITION:
+    column j of CenterlineId ends at outlet j of the outlets file, and that
+    outlet gets RCR_j. The columns follow the order the caps were found in
+    when the centerlines were extracted (directory iteration order), but
+    __main__.py later rewrites the outlets file sorted. With cached
+    centerlines the two disagree and every outlet is silently mislabelled.
+
+    Each column's endpoint is matched to the nearest cap centroid. Returns
+    the reconciled name list.
+    """
+    reader = vtk.vtkXMLPolyDataReader()
+    reader.SetFileName(centerlines_file)
+    reader.Update()
+    cl = reader.GetOutput()
+    cid = v2n(cl.GetPointData().GetArray('CenterlineId'))
+    pts = v2n(cl.GetPoints().GetData())
+    n_pts = cl.GetNumberOfPoints()
+
+    # endpoints: points attached to exactly one cell, excluding the inlet (point 0)
+    ids = vtk.vtkIdList()
+    degree = np.zeros(n_pts, dtype=int)
+    for p in range(n_pts):
+        cl.GetPointCells(p, ids)
+        degree[p] = ids.GetNumberOfIds()
+
+    caps = {}
+    for f in sorted(os.listdir(caps_folder)):
+        if f.startswith('cap_') and f.endswith('.vtp'):
+            r = vtk.vtkXMLPolyDataReader()
+            r.SetFileName(os.path.join(caps_folder, f))
+            r.Update()
+            caps[os.path.splitext(f)[0]] = v2n(r.GetOutput().GetPoints().GetData()).mean(axis=0)
+
+    names = []
+    for j in range(cid.shape[1]):
+        ends = [p for p in range(n_pts) if degree[p] == 1 and p != 0 and cid[p, j] == 1]
+        if not ends:
+            raise RuntimeError("centerline column %d has no outlet endpoint" % j)
+        e = pts[ends[0]]
+        name = min(caps, key=lambda k: np.linalg.norm(caps[k] - e))
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise RuntimeError("two centerlines end at the same cap: " + str(names))
+
+    old = []
+    if os.path.exists(outlets_dat):
+        with open(outlets_dat) as f:
+            old = [l.strip() for l in f if l.strip()]
+    if old != names:
+        print("  [FIX] centerlines_outlets.dat order did not match the centerlines; rewriting:")
+        for j, (a, b) in enumerate(zip(old + [''] * (len(names) - len(old)), names)):
+            print("        column %d: %s -> %s" % (j, a or '(none)', b))
+        with open(outlets_dat, 'w') as f:
+            for n in names:
+                f.write(n + '\n')
+    return names
