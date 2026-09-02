@@ -74,7 +74,16 @@ def cmd_init(args):
                    inflow_source='file' if inflow else args.inflow_source, outlet_names=outlet_names,
                    onedsolver=args.onedsolver)
     console.ok("wrote %s" % yaml_path)
-    console.info("edit flow_split and pressure_mmHg, then: miros run %s" % d)
+    steps = []
+    if surface:
+        steps.append("miros show caps %s        (which cap is which; set model.inlet if not the largest)" % d)
+    if not inflow:
+        steps.append("miros inflow edit %s      (draw one cardiac cycle)" % d)
+    steps.append("edit %s: flow_split (percent per outlet) and pressure_mmHg" % yaml_path)
+    steps.append("miros run %s" % d)
+    console.info("next:")
+    for k, s in enumerate(steps, 1):
+        console.info("  %d. %s" % (k, s))
     return 0
 
 
@@ -131,9 +140,10 @@ def cmd_inflow(args):
     t, q = edit_waveform(i.heart_rate_bpm, i.points_per_cycle, i.peak_flow_mL_s, initial=initial)
     target.parent.mkdir(parents=True, exist_ok=True)
     write_inflow(t, q, target)
-    console.ok("wrote %s (%d points, cycle %.3f s)" % (target, len(t), t[-1]))
-    if i.source != 'file':
-        console.info("set inflow.source: file and inflow.file: %s in case.yaml to use it" % os.path.relpath(target, case.dir))
+    tz = getattr(__import__('numpy'), 'trapezoid', None) or __import__('numpy').trapz
+    console.ok("wrote %s (%d points, cycle %.3f s, mean %.1f mL/s, peak %.1f mL/s)" % (
+        target, len(t), t[-1], tz(q, t) / (t[-1] - t[0]), q.max()))
+    console.info("`miros run %s` will use it (the inflow stage is now stale)" % case.dir)
     return 0
 
 

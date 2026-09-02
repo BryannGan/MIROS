@@ -92,7 +92,8 @@ def edit_waveform(heart_rate_bpm: float = 60.0, points_per_cycle: int = 1200,
         line.set_data(x_dense, g(x_dense))
 
     _DraggablePoints(ax, x_ctrl, y_ctrl, refresh)
-    ax.set_title('Drag the red points to shape one cardiac cycle. Close the window when done.')
+    ax.set_title('Drag the red points to shape one cardiac cycle (first and last point are tied).\n'
+                 'Set heart rate and axis range below, press Enter in each box, then close the window.')
     ax.grid(True, alpha=0.3)
     ax.set_ylabel('Flow [mL/s]')
     ax.set_xlabel('Cycle')
@@ -101,7 +102,7 @@ def edit_waveform(heart_rate_bpm: float = 60.0, points_per_cycle: int = 1200,
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, p: '%d%%' % round(v * 100)))
 
     state = {'hr': float(heart_rate_bpm)}
-    box = TextBox(plt.axes([0.25, 0.08, 0.15, 0.05]), 'Heart rate [bpm]: ', initial=str(heart_rate_bpm))
+    box = TextBox(plt.axes([0.25, 0.08, 0.15, 0.05]), 'Heart rate [bpm]: ', initial='%g' % heart_rate_bpm)
 
     def on_hr(text):
         try:
@@ -113,6 +114,21 @@ def edit_waveform(heart_rate_bpm: float = 60.0, points_per_cycle: int = 1200,
         except ValueError:
             box.text_disp.set_color('red')
     box.on_submit(on_hr)
+
+    # axis range: the peak flow you expect, so the curve has room
+    ybox = TextBox(plt.axes([0.72, 0.08, 0.15, 0.05]), 'Peak flow axis [mL/s]: ', initial='%g' % (upper / 1.25))
+
+    def on_ymax(text):
+        try:
+            v = float(text)
+            if v <= 0:
+                raise ValueError
+            ax.set_ylim(-0.25 * v, 1.25 * v)
+            fig.canvas.draw_idle()
+            ybox.text_disp.set_color('black')
+        except ValueError:
+            ybox.text_disp.set_color('red')
+    ybox.on_submit(on_ymax)
     plt.show()
 
     x_norm, y = line.get_data()
