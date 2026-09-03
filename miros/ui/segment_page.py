@@ -228,7 +228,8 @@ class SegmentPage:
         if self.image is None:
             self.pick_btn.setChecked(False)
             return self.main.error('load an image first')
-        self.main.viewer.show_image(self.image)
+        if self.main.viewer._image is not self.image:      # only when something else was on screen
+            self.main.viewer.show_image(self.image)
         self.main.viewer.show_seeds(self.seeds)
         if on:
             self.pending = None

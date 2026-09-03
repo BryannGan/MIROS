@@ -55,6 +55,8 @@ class Viewer:
         self.widget = None
         self.actors = {}
         self._pick_cb = None
+        self._click_filter = None
+        self._image = None            # the volume currently sliced on screen (Segment step)
         self._camera_set = False
         self._results = None          # cache of the loaded 1D results (see load_results)
         if not offscreen:
@@ -69,13 +71,11 @@ class Viewer:
     def clear(self):
         if self.plotter is not None:
             if self.can_pick:
-                try:
-                    self.plotter.disable_picking()       # pyvista refuses to enable picking twice
-                except Exception:
-                    pass
+                self.disable_pick()                      # pyvista refuses to enable picking twice
             self.plotter.clear()
             self.plotter.clear_slider_widgets()
         self.actors = {}
+        self._image = None
 
     def show_model(self, surf, caps, names: List[str], inlet_row: int, selected: Optional[int] = None,
                    pick_callback=None):
@@ -169,23 +169,60 @@ class Viewer:
         self.plotter.render()
 
     def enable_slice_picking(self, callback):
+        """
+        Click a slice to report the 3D point under the cursor. VTK gives the
+        rotation style exclusive focus between press and release, so the
+        click is caught on the Qt widget instead: a plain click places a
+        point, a drag turns the view as usual.
+        """
+        if not self.can_pick or self.widget is None:
+            return
+        import vtk
+        from qtpy import QtCore
+        self.disable_pick()
+        widget, plotter = self.widget, self.plotter
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.005)
+
+        class _ClickFilter(QtCore.QObject):
+            def __init__(self):
+                super().__init__(widget)
+                self.pressed_at = None
+
+            def eventFilter(self, obj, ev):
+                t = ev.type()
+                if t == QtCore.QEvent.MouseButtonPress and ev.button() == QtCore.Qt.LeftButton:
+                    self.pressed_at = ev.pos()
+                elif t == QtCore.QEvent.MouseButtonRelease and ev.button() == QtCore.Qt.LeftButton:
+                    at, self.pressed_at = self.pressed_at, None
+                    if at is not None and (ev.pos() - at).manhattanLength() <= 4:
+                        self.pick(ev.pos())
+                return False                      # never swallow the event: VTK still gets it
+
+            def pick(self, pos):
+                w = plotter.render_window.GetSize()                 # device pixels
+                r = w[0] / max(widget.width(), 1)                   # HiDPI / device pixel ratio
+                x, y = int(pos.x() * r), int(w[1] - 1 - pos.y() * r)
+                if picker.Pick(x, y, 0, plotter.renderer):
+                    callback(np.array(picker.GetPickPosition()))
+
+        self._click_filter = _ClickFilter()
+        widget.installEventFilter(self._click_filter)
+        self.plotter.add_text('click a slice to place a seed point (drag still turns the view)',
+                              position='lower_left', font_size=10, name='hint')
+
+    def disable_pick(self):
         if not self.can_pick:
             return
+        f = getattr(self, '_click_filter', None)
+        if f is not None and self.widget is not None:
+            self.widget.removeEventFilter(f)
+        self._click_filter = None
         try:
             self.plotter.disable_picking()
         except Exception:
             pass
-        self.plotter.enable_surface_point_picking(callback=callback, show_message=False, show_point=False,
-                                                  left_clicking=True, pickable_window=False)
-        self.plotter.add_text('click a slice to place a seed point', position='lower_left', font_size=10, name='hint')
-
-    def disable_pick(self):
-        if self.can_pick:
-            try:
-                self.plotter.disable_picking()
-            except Exception:
-                pass
-            self.plotter.remove_actor('hint', render=True)
+        self.plotter.remove_actor('hint', render=True)
 
     # ---- 1D results ------------------------------------------------------
     UNITS = {'pressure_mmHg': 'mmHg', 'flow': 'mL/s', 'area': 'cm²'}

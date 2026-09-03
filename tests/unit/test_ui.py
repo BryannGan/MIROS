@@ -124,3 +124,42 @@ def test_app_runs_preprocess_in_worker(surface_path, tmp_path, qt_app):
     from miros.config import STAGES
     assert win.stage_table.item(STAGES.index('preprocess'), 1).text() == 'fresh'
     assert win.stage_table.item(STAGES.index('segment'), 1).text() == 'disabled'
+
+
+@pytest.mark.slow
+def test_seed_picking_places_points_on_a_click_but_not_on_a_drag(qt_app, tmp_path):
+    """A click on a slice places a seed point; a drag turns the view instead (Segment step)."""
+    import pyvista as pv
+    from qtpy import QtCore, QtGui, QtWidgets
+    from miros.ui.app import MainWindow
+
+    w = MainWindow()                                  # with the 3D view: picking needs the render widget
+    if not w.viewer.can_pick:
+        pytest.skip('no render widget in this environment')
+    grid = pv.ImageData(dimensions=(20, 20, 20), spacing=(0.5, 0.5, 0.5), origin=(0.0, 0.0, 0.0))
+    grid.point_data['intensity'] = np.linspace(0, 1, grid.n_points, dtype=np.float32)
+    w.viewer.show_image(grid)
+    w.win.resize(1200, 800); w.win.show(); qt_app.processEvents()
+    w.viewer.widget.resize(600, 500); qt_app.processEvents()
+    w.viewer.plotter.render_window.SetSize(600, 500); w.viewer.plotter.render(); qt_app.processEvents()
+
+    picked = []
+    w.viewer.enable_slice_picking(picked.append)
+    widget = w.viewer.widget
+    cx, cy = widget.width() // 2, widget.height() // 2
+
+    def click(x, y, drag=0):
+        for kind, pos in ((QtCore.QEvent.MouseButtonPress, (x, y)),
+                          (QtCore.QEvent.MouseButtonRelease, (x + drag, y))):
+            QtWidgets.QApplication.sendEvent(widget, QtGui.QMouseEvent(
+                kind, QtCore.QPointF(*pos), QtCore.Qt.LeftButton, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier))
+
+    click(cx, cy)
+    assert len(picked) == 1, 'a click on the slices picked nothing'
+    b = grid.bounds
+    assert all(b[2 * i] - 1e-6 <= picked[0][i] <= b[2 * i + 1] + 1e-6 for i in range(3))
+    click(cx, cy, drag=40)
+    assert len(picked) == 1, 'turning the view placed a point'
+    w.viewer.disable_pick()
+    click(cx, cy)
+    assert len(picked) == 1, 'clicks still picked after picking was switched off'
