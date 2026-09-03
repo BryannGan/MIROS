@@ -132,7 +132,8 @@ class Viewer:
         b = grid.bounds
         lo, hi = np.array(b[0::2], float), np.array(b[1::2], float)
         vals = np.asarray(grid.point_data['intensity'])
-        c0, c1 = (float(np.percentile(vals, 1)), float(np.percentile(vals, 99)))
+        step = max(int(vals.size // 2_000_000), 1)        # a sample is enough for the grey range
+        c0, c1 = (float(np.percentile(vals[::step], 1)), float(np.percentile(vals[::step], 99)))
 
         self._slice_actors = []
         for axis in range(3):

@@ -163,3 +163,26 @@ def test_seed_picking_places_points_on_a_click_but_not_on_a_drag(qt_app, tmp_pat
     w.viewer.disable_pick()
     click(cx, cy)
     assert len(picked) == 1, 'clicks still picked after picking was switched off'
+
+
+@pytest.mark.slow
+def test_segment_page_loads_a_typed_image_path(qt_app, tmp_path):
+    """A path typed or pasted into the image box loads the volume (not only the Browse button)."""
+    import pyvista as pv
+    from miros.ui.app import MainWindow
+
+    grid = pv.ImageData(dimensions=(12, 12, 12), spacing=(0.1, 0.1, 0.1))
+    grid.point_data['scan'] = np.arange(grid.n_points, dtype=np.int16)
+    f = tmp_path / 'scan.vti'
+    grid.save(str(f))
+    w = MainWindow()
+    errors = []
+    w.error = errors.append
+    w.segment.image_edit.setText(str(f))
+    w.segment._image_path_typed()
+    assert not errors and w.segment.image is not None
+    assert w.segment.image.dimensions == (12, 12, 12)
+    assert w.segment.image.point_data['intensity'].dtype == np.int16   # no float32 copy of a big scan
+    w.segment.image_edit.setText(str(tmp_path / 'missing.vti'))
+    w.segment._image_path_typed()
+    assert errors and 'no such file' in errors[-1]

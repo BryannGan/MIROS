@@ -127,7 +127,7 @@ def _image_for_seqseg(case, image: Path) -> Path:
     name = grid.point_data.active_scalars_name or (grid.point_data.keys() or [None])[0]
     if name is None:
         raise ConfigError("segmentation.image %s carries no point data to segment" % image.name)
-    arr = np.asarray(grid.point_data[name], dtype=np.float32).reshape(grid.dimensions[::-1])
+    arr = np.ascontiguousarray(grid.point_data[name]).reshape(grid.dimensions[::-1])   # keep the scan's dtype
     img = sitk.GetImageFromArray(arr)
     img.SetSpacing(tuple(float(s) for s in grid.spacing))
     img.SetOrigin(tuple(float(o) for o in grid.origin))

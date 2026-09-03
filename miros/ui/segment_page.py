@@ -35,6 +35,8 @@ class SegmentPage:
                                        'MIROS opens the outlets and continues from there.'))
         form = QtWidgets.QFormLayout()
         self.image_edit = QtWidgets.QLineEdit()
+        self.image_edit.setPlaceholderText('path to the volume, or use Browse')
+        self.image_edit.editingFinished.connect(self._image_path_typed)
         b = QtWidgets.QPushButton('Browse…'); b.clicked.connect(self._browse_image)
         r = QtWidgets.QHBoxLayout(); r.addWidget(self.image_edit); r.addWidget(b)
         form.addRow('image (.nii.gz / .mha / .nrrd)', r)
@@ -103,18 +105,42 @@ class SegmentPage:
         self.pick_hint.setText('' if on else 'Create the case from this image first, then place the seeds.')
 
     # ---- image ----------------------------------------------------------
+    def _start_dir(self) -> str:
+        here = self.image_edit.text().strip()
+        if here:
+            p = Path(here)
+            return str(p if p.is_dir() else p.parent)
+        return str(Path.home())
+
     def _browse_image(self):
-        f, _ = self.W.QFileDialog.getOpenFileName(self.main.win, 'Image volume', '',
-                                                  'Volumes (*.nii *.nii.gz *.mha *.mhd *.nrrd *.nhdr *.vti *.vtk);;'
-                                                  'All files (*)')
-        if f:
+        # Qt's own dialog, not the desktop one: the pattern list is then always applied
+        # the same way, and a volume is never hidden by a portal's idea of the filter
+        dlg = self.W.QFileDialog(self.main.win, 'Image volume', self._start_dir())
+        dlg.setOption(self.W.QFileDialog.DontUseNativeDialog, True)
+        dlg.setFileMode(self.W.QFileDialog.ExistingFile)
+        dlg.setNameFilters(['Volumes (*.nii *.nii.gz *.mha *.mhd *.nrrd *.nhdr *.vti *.vtk *.vtk.gz)',
+                            'All files (*)'])
+        if dlg.exec_() and dlg.selectedFiles():
+            f = dlg.selectedFiles()[0]
             self.image_edit.setText(f)
             self.load_image(Path(f))
 
+    def _image_path_typed(self):
+        p = Path(self.image_edit.text().strip()).expanduser()
+        if not p.name or p == self.image_path:
+            return
+        if not p.exists():
+            return self.main.error('no such file: %s' % p)
+        self.image_edit.setText(str(p))
+        self.load_image(p)
+
     def _browse_case_dir(self):
-        d = self.W.QFileDialog.getExistingDirectory(self.main.win, 'Case folder', self.case_edit.text() or str(Path.home()))
-        if d:
-            self.case_edit.setText(d)
+        dlg = self.W.QFileDialog(self.main.win, 'Case folder', self.case_edit.text() or str(Path.home()))
+        dlg.setOption(self.W.QFileDialog.DontUseNativeDialog, True)
+        dlg.setFileMode(self.W.QFileDialog.Directory)
+        dlg.setOption(self.W.QFileDialog.ShowDirsOnly, True)
+        if dlg.exec_() and dlg.selectedFiles():
+            self.case_edit.setText(dlg.selectedFiles()[0])
 
     def load_image(self, path: Path):
         import pyvista as pv
@@ -126,7 +152,7 @@ class SegmentPage:
             if name is None:
                 return self.main.error('%s carries no point data to show' % path.name)
             if name != 'intensity':
-                grid.point_data['intensity'] = np.asarray(grid.point_data[name], dtype=np.float32)
+                grid.point_data['intensity'] = grid.point_data[name]      # same buffer, no copy
             size, spacing = grid.dimensions, grid.spacing
         else:
             try:
@@ -139,7 +165,7 @@ class SegmentPage:
             d = np.asarray(img.GetDirection()).reshape(3, 3)
             if hasattr(grid, 'direction_matrix'):
                 grid.direction_matrix = d
-            grid.point_data['intensity'] = arr.ravel(order='C').astype(np.float32)
+            grid.point_data['intensity'] = np.ascontiguousarray(arr.ravel(order='C'))
             size, spacing = img.GetSize(), img.GetSpacing()
         self.image = grid
         self.image_path = path
