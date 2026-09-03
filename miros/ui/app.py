@@ -424,9 +424,8 @@ class MainWindow:
             caps = C.make_caps(C.read_polydata(surface))
         except Exception as e:
             return self.error(str(e))
-        rel = os.path.relpath(Path(surface).resolve(), d)
-        if rel.count('..') > 2:
-            rel = str(Path(surface).resolve())
+        from ..cli import _case_relative
+        rel = _case_relative(Path(surface).resolve(), d)
         write_template(y, name=d.name, surface=rel, units=self.units.currentText(), inlet=C.inlet_cap(caps).name,
                        inflow_file='input/inflow.flow', inflow_source='gui',
                        outlet_names=[c.name for c in C.outlet_caps(caps)])
@@ -825,7 +824,7 @@ class MainWindow:
         row.addWidget(self.run_btn); row.addWidget(self.force_btn); row.addStretch()
         lay.addLayout(row)
         self.log = W.QPlainTextEdit(); self.log.setReadOnly(True)
-        self.log.setFont(self.QtGui.QFont('monospace'))
+        self.log.setFont(self.QtGui.QFontDatabase.systemFont(self.QtGui.QFontDatabase.FixedFont))   # any OS
         self.log.setMaximumBlockCount(5000)
         lay.addWidget(self.log, 1)
         self.tabs.addTab(page, '4  Run')

@@ -49,7 +49,10 @@ def cmd_doctor(args):
 
 def _case_relative(path: Path, case_dir: Path) -> str:
     """Path as written into case.yaml: relative when inside/near the case, absolute otherwise."""
-    rel = os.path.relpath(path, case_dir)
+    try:
+        rel = os.path.relpath(path, case_dir)
+    except ValueError:                       # Windows: different drives have no relative path
+        return str(path)
     return rel if rel.count('..') <= 2 else str(path)
 
 
