@@ -6,7 +6,7 @@ how to run it. Order matters and is the order below.
 from dataclasses import dataclass
 from typing import Callable, Dict, List
 
-from . import (extract_0d, extract_1d, inflow, preprocess, rom_model, sim_0d, sim_1d, tune,
+from . import (extract_0d, extract_1d, inflow, preprocess, rom_model, segment, sim_0d, sim_1d, tune,
                volume_mesh)
 
 
@@ -21,6 +21,7 @@ class Stage:
 
 
 REGISTRY: List[Stage] = [
+    Stage('segment', segment.inputs, segment.outputs, segment.run, segment.enabled, segment.disabled_reason),
     Stage('preprocess', preprocess.inputs, preprocess.outputs, preprocess.run),
     Stage('inflow', inflow.inputs, inflow.outputs, inflow.run),
     Stage('rom_model', rom_model.inputs, rom_model.outputs, rom_model.run),

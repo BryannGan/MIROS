@@ -121,4 +121,6 @@ def test_app_runs_preprocess_in_worker(surface_path, tmp_path, qt_app):
     assert any('preprocess' in l for l in lines)
     win = MainWindow(d, offscreen=True)
     win.refresh_status()
-    assert win.stage_table.item(0, 1).text() == 'fresh'
+    from miros.config import STAGES
+    assert win.stage_table.item(STAGES.index('preprocess'), 1).text() == 'fresh'
+    assert win.stage_table.item(STAGES.index('segment'), 1).text() == 'disabled'

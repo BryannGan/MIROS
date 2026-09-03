@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Union, get_args, get_origin
 
 import yaml
 
-STAGES = ['preprocess', 'inflow', 'rom_model', 'tune', 'sim_0d', 'extract_0d',
+STAGES = ['segment', 'preprocess', 'inflow', 'rom_model', 'tune', 'sim_0d', 'extract_0d',
           'volume_mesh', 'sim_1d', 'extract_1d']
 
 
@@ -19,8 +19,29 @@ class ConfigError(ValueError):
 
 
 @dataclass
+class SeedConfig:
+    point: List[float] = field(default_factory=list)       # where tracking starts (world coordinates)
+    direction: List[float] = field(default_factory=list)   # a second point a little further along the vessel
+    radius: float = 1.0                                    # lumen radius there
+
+
+@dataclass
+class SegmentationConfig:
+    """Segment the vessel from an image with SeqSeg; leave `image` null to start from model.surface."""
+    image: Optional[str] = None                # .nii(.gz) / .mha / .nrrd ...
+    units: str = 'mm'                          # units of the image coordinates: cm | mm
+    model: str = 'aorta_ct'                    # aorta_ct | aorta_mr | coronary_ct | path to an nnU-Net trainer folder
+    seeds: List[SeedConfig] = field(default_factory=list)
+    config_name: str = 'global'
+    max_steps: int = 1000
+    max_branches: int = 100
+    max_steps_per_branch: int = 100
+    outlet_back_off: float = 2.5               # radii to walk back from each tracked vessel end before cutting
+
+
+@dataclass
 class ModelConfig:
-    surface: str = 'input/surface.vtp'
+    surface: Optional[str] = 'input/surface.vtp'   # null when the surface comes from segmentation
     units: str = 'cm'                          # cm | mm (mm is converted to cm)
     inlet: Optional[str] = None                # cap name; None = largest cap
     cap_names: Optional[List[str]] = None      # names for caps in decreasing-area order
@@ -96,6 +117,7 @@ class SolversConfig:
 @dataclass
 class CaseConfig:
     name: str = 'case'
+    segmentation: SegmentationConfig = field(default_factory=SegmentationConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     inflow: InflowConfig = field(default_factory=InflowConfig)
     boundary_conditions: BoundaryConditionsConfig = field(default_factory=BoundaryConditionsConfig)
@@ -142,12 +164,16 @@ def _coerce(ftype, v, where: str):
     if ftype is str:
         return str(v) if v is not None else None
     if origin is dict:
+        if v is None:                                         # e.g. `flow_split:` with only comments under it
+            return {}
         if not isinstance(v, dict):
             raise ConfigError("%s: expected a mapping, got %r" % (where, v))
         kt, vt = get_args(ftype) or (str, Any)
         return {str(k): (_coerce(vt, x, where + '.' + str(k)) if vt in (float, int, bool, str) else x)
                 for k, x in v.items()}
     if origin is list:
+        if v is None:
+            return []
         if not isinstance(v, list):
             raise ConfigError("%s: expected a list, got %r" % (where, v))
         (et,) = get_args(ftype) or (Any,)
@@ -169,15 +195,35 @@ def _from_dict(cls, data: Any, where: str):
         ftype = valid[k].type
         if isinstance(ftype, type) and is_dataclass(ftype):
             kwargs[k] = _from_dict(ftype, v, where + '.' + k)
+        elif get_origin(ftype) is list and get_args(ftype) and isinstance(get_args(ftype)[0], type) \
+                and is_dataclass(get_args(ftype)[0]):
+            if v is None:
+                kwargs[k] = []
+            elif not isinstance(v, list):
+                raise ConfigError("%s.%s: expected a list" % (where, k))
+            else:
+                kwargs[k] = [_from_dict(get_args(ftype)[0], item, '%s.%s[%d]' % (where, k, j)) for j, item in enumerate(v)]
         else:
             kwargs[k] = _coerce(ftype, v, where + '.' + k)
     return cls(**kwargs)
 
 
 def validate(cfg: CaseConfig) -> None:
-    m, i, bc, s = cfg.model, cfg.inflow, cfg.boundary_conditions, cfg.simulation
+    m, i, bc, s, sg = cfg.model, cfg.inflow, cfg.boundary_conditions, cfg.simulation, cfg.segmentation
     if m.units not in ('cm', 'mm'):
         raise ConfigError("model.units must be 'cm' or 'mm', got %r" % m.units)
+    if sg.image:
+        if sg.units not in ('cm', 'mm'):
+            raise ConfigError("segmentation.units must be 'cm' or 'mm'")
+        if not sg.seeds:
+            raise ConfigError("segmentation.seeds: at least one seed (point, direction, radius) is required")
+        for k, sd in enumerate(sg.seeds):
+            if len(sd.point) != 3 or len(sd.direction) != 3:
+                raise ConfigError("segmentation.seeds[%d]: point and direction need 3 coordinates" % k)
+            if sd.radius <= 0:
+                raise ConfigError("segmentation.seeds[%d]: radius must be positive" % k)
+    elif not m.surface:
+        raise ConfigError("either model.surface or segmentation.image must be given")
     if i.source not in ('file', 'gui'):
         raise ConfigError("inflow.source must be 'file' or 'gui', got %r" % i.source)
     if i.source == 'file' and not i.file:
@@ -189,14 +235,15 @@ def validate(cfg: CaseConfig) -> None:
     if bc.mode == 'file' and not bc.file:
         raise ConfigError("boundary_conditions.file is required when mode is 'file'")
     if bc.mode == 'tune':
-        if not bc.flow_split:
+        if not bc.flow_split and not sg.image:
             raise ConfigError("boundary_conditions.flow_split is required when mode is 'tune' "
                               "(percent of flow per outlet name)")
-        total = sum(bc.flow_split.values())
-        if abs(total - 100.0) > 0.5:
-            raise ConfigError("boundary_conditions.flow_split sums to %.1f, must be 100" % total)
-        if any(v <= 0 for v in bc.flow_split.values()):
-            raise ConfigError("every flow_split entry must be positive")
+        if bc.flow_split:                     # may stay empty until segmentation has produced the caps
+            total = sum(bc.flow_split.values())
+            if abs(total - 100.0) > 0.5:
+                raise ConfigError("boundary_conditions.flow_split sums to %.1f, must be 100" % total)
+            if any(v <= 0 for v in bc.flow_split.values()):
+                raise ConfigError("every flow_split entry must be positive")
         p = bc.pressure_mmHg
         if p.systolic <= p.diastolic:
             raise ConfigError("pressure_mmHg.systolic must exceed diastolic")
@@ -231,8 +278,21 @@ TEMPLATE = """\
 # never asks anything. Paths are relative to this file's directory.
 name: {name}
 
+segmentation:                   # optional: segment the vessel from an image with SeqSeg
+  image: {image}                # null = start from model.surface
+  units: {image_units}          # units of the image coordinates (cm | mm)
+  model: {seg_model}            # aorta_ct | aorta_mr | coronary_ct | path to an nnU-Net trainer folder
+  seeds: {seeds}
+  #  - {{point: [x, y, z], direction: [x2, y2, z2], radius: 1.1}}   # world coordinates; direction = a second
+  #                                                              point a little further along the vessel
+  config_name: global
+  max_steps: 1000
+  max_branches: 100
+  max_steps_per_branch: 100
+  outlet_back_off: 2.5          # radii to walk back from each vessel end before cutting it open
+
 model:
-  surface: {surface}
+  surface: {surface}            # null when the surface comes from segmentation
   units: {units}                # cm | mm  (mm models are converted to cm)
   inlet: {inlet}                # cap name; null = the largest cap
   # caps are named cap_1, cap_2, ... in decreasing-area order; give your own
@@ -293,14 +353,22 @@ solvers:
 
 def write_template(path, name='case', surface='input/surface.vtp', units='cm', inlet=None,
                    inflow_file='input/inflow.flow', inflow_source='file', outlet_names=None,
-                   onedsolver=None) -> None:
+                   onedsolver=None, image=None, image_units='mm', seg_model='aorta_ct', seeds=None) -> None:
     if outlet_names:
         share = 100.0 / len(outlet_names)
         split = '\n'.join('    %s: %s' % (n, ('%.4g' % share)) for n in outlet_names)
     else:
-        split = '    # cap_2: 50\n    # cap_3: 50'
-    text = TEMPLATE.format(name=name, surface=surface, units=units,
+        split = '    # cap_2: 50\n    # cap_3: 50   (filled in once the caps are known)'
+    if seeds:
+        seeds_txt = '\n' + '\n'.join('    - {point: [%s], direction: [%s], radius: %g}' % (
+            ', '.join('%.4f' % v for v in s['point']), ', '.join('%.4f' % v for v in s['direction']), s['radius'])
+            for s in seeds)
+    else:
+        seeds_txt = '[]'
+    text = TEMPLATE.format(name=name, surface=surface if surface else 'null', units=units,
                            inlet=inlet if inlet else 'null', inflow_source=inflow_source,
                            inflow_file=inflow_file if inflow_file else 'null', flow_split=split,
-                           onedsolver=onedsolver if onedsolver else 'null')
+                           onedsolver=onedsolver if onedsolver else 'null',
+                           image=image if image else 'null', image_units=image_units, seg_model=seg_model,
+                           seeds=seeds_txt)
     Path(path).write_text(text, encoding='utf-8', newline='\n')

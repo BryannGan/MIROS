@@ -26,10 +26,10 @@ from typing import List, Optional
 
 import numpy as np
 
+from ..config import STAGES
 from ..timestep import recommended_samples_per_cycle
 
 _NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]*$')
-STAGES = ['preprocess', 'inflow', 'rom_model', 'tune', 'sim_0d', 'extract_0d', 'volume_mesh', 'sim_1d', 'extract_1d']
 
 
 def _require_qt():

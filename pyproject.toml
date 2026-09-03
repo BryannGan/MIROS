@@ -29,7 +29,9 @@ dependencies = [
 # The 1D solver (svOneDSolver) is an executable; see `miros doctor`.
 
 [project.optional-dependencies]
-gui = ["pyvistaqt", "PySide6"]       # `miros setup` (3D view + form)
+gui = ["pyvistaqt", "PySide6"]       # `miros gui` (3D view + steps)
+seg = ["seqseg>=2.1", "SimpleITK"]   # segmentation from images (pulls nnunetv2 + torch)
+all = ["pyvistaqt", "PySide6", "seqseg>=2.1", "SimpleITK"]
 dev = ["pytest", "pyvistaqt", "PySide6"]
 
 [project.scripts]

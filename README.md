@@ -110,6 +110,38 @@ miros status examples/aorta        # which stages are fresh / stale and why
 miros run examples/aorta --from tune
 ```
 
+## From an image: segmentation with SeqSeg
+
+If you start from a CT or MR volume rather than a surface, MIROS runs
+[SeqSeg](https://github.com/numisveinsson/SeqSeg) for you and opens the outlets of the result:
+
+```bash
+pip install "miros[seg]"              # seqseg + nnU-Net + torch (GPU recommended, CPU works)
+miros models download aorta_ct        # or aorta_mr, coronary_ct — 225 MB / 225 MB / 3 MB from Zenodo
+```
+
+```yaml
+segmentation:
+  image: input/scan.nii.gz            # .nii(.gz) / .mha / .nrrd
+  units: mm                           # units of the image coordinates
+  model: aorta_ct                     # aorta_ct | aorta_mr | coronary_ct | path to an nnU-Net trainer folder
+  seeds:
+    - {point: [x, y, z], direction: [x2, y2, z2], radius: 1.1}   # where to start, which way, lumen radius
+model:
+  surface: null                       # the surface comes from the segmentation
+```
+
+`miros run` then adds a `segment` stage in front of everything else: SeqSeg traces the vessel tree
+from the seeds, MIROS takes its smoothed surface and tracked centerline, proposes a cut plane a
+few radii inside each vessel end (`work/outlets_proposed.json`), clips the surface open there, and
+continues as usual. Put your own planes under `model.outlets` to override the proposals. The
+flow splits can stay empty until the caps exist; `miros setup` fills them in.
+
+The pretrained weights are published by the SeqSeg authors on Zenodo (CC-BY-4.0):
+[aorta/femoral CT+MR](https://doi.org/10.5281/zenodo.15020477),
+[coronary CT](https://doi.org/10.5281/zenodo.19547894). `miros models list` shows what is on disk
+(`~/.miros/models`, or `MIROS_MODELS_DIR`).
+
 ## Your own case
 
 ```bash
@@ -204,7 +236,8 @@ outlet (`pressure_mmHg.at: cap_2`), use a smoother waveform, or accept the value
 
 | Command | Does |
 |---|---|
-| `miros doctor` | checks Python packages, finds `OneDSolver`, reports whether a display is available |
+| `miros doctor` | checks Python packages, finds `OneDSolver`, lists downloaded models, reports whether a display is available |
+| `miros models list` / `download NAME` | pretrained SeqSeg models (`aorta_ct`, `aorta_mr`, `coronary_ct`) |
 | `miros init DIR [--surface S] [--inflow F] [--units mm] [--inlet NAME]` | creates `DIR/case.yaml` with the detected caps |
 | `miros run DIR [--from STAGE] [--until STAGE] [--force]` | runs stale stages; `--from` re-runs from a stage onward |
 | `miros status DIR` | fresh / stale / never per stage, with the reason |
@@ -213,7 +246,8 @@ outlet (`pressure_mmHg.at: cap_2`), use a smoother waveform, or accept the value
 | `miros show caps DIR` | read-only 3D view of the surface with labelled caps |
 | `miros inflow edit DIR` | draw the inflow waveform; saved to `inflow.file` and picked up by the next run |
 
-Stages, in order: `preprocess inflow rom_model tune sim_0d extract_0d volume_mesh sim_1d extract_1d`.
+Stages, in order: `segment preprocess inflow rom_model tune sim_0d extract_0d volume_mesh sim_1d extract_1d`
+(`segment` only when `segmentation.image` is set).
 
 Everything is also a library: `miros.case.Case(dir).run()`, `miros.rom_model.build_rom_model(...)`,
 `miros.geometry.centerlines.compute_centerlines(...)`.

@@ -61,6 +61,26 @@ def update_case_yaml(path, *, inlet: Optional[str] = None, cap_names: Optional[S
         y.dump(data, f)
 
 
+def set_seeds(path, seeds) -> None:
+    """segmentation.seeds = [{point, direction, radius}, ...] in flow style, keeping comments."""
+    path = Path(path)
+    y = _yaml()
+    with open(path, 'r', encoding='utf-8') as f:
+        data = y.load(f) or CommentedMap()
+    sg = data.setdefault('segmentation', CommentedMap())
+    seq = CommentedSeq()
+    for s in seeds:
+        m = CommentedMap()
+        m['point'] = [round(float(v), 4) for v in s['point']]
+        m['direction'] = [round(float(v), 4) for v in s['direction']]
+        m['radius'] = round(float(s['radius']), 4)
+        m.fa.set_flow_style()
+        seq.append(m)
+    sg['seeds'] = seq
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        y.dump(data, f)
+
+
 def set_values(path, values: Dict[str, object]) -> None:
     """Set dotted keys, e.g. {'simulation.run_1d': False, 'model.units': 'mm'}, keeping comments."""
     path = Path(path)

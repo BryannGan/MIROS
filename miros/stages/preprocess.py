@@ -1,5 +1,6 @@
 """preprocess: surface -> (unit-converted, optionally clipped and remeshed) surface + caps."""
 import json
+from pathlib import Path
 
 import numpy as np
 import vtk
@@ -10,9 +11,30 @@ from ..manifest import file_hash, value_hash
 from ..ui import console
 
 
-def inputs(case):
+def source_surface(case):
+    """The surface this stage starts from: model.surface, or SeqSeg's output when segmenting."""
+    if case.config.segmentation.image:
+        return case.work / 'seqseg_surface.vtp'
+    return case.resolve(case.config.model.surface)
+
+
+def outlet_planes(case):
+    """model.outlets if given, else the planes the segment stage proposed (if any)."""
     m = case.config.model
-    return {'surface': file_hash(case.resolve(m.surface)), 'model': value_hash(case.config.section('model'))}
+    if m.outlets:
+        return list(m.outlets)
+    proposed = case.work / 'outlets_proposed.json'
+    if case.config.segmentation.image and proposed.exists():
+        return json.loads(proposed.read_text())
+    return []
+
+
+def inputs(case):
+    d = {'surface': file_hash(source_surface(case)), 'model': value_hash(case.config.section('model'))}
+    proposed = case.work / 'outlets_proposed.json'
+    if case.config.segmentation.image and proposed.exists():
+        d['proposed_outlets'] = file_hash(proposed)
+    return d
 
 
 def outputs(case):
@@ -31,13 +53,16 @@ def _scale(surface, factor):
 
 def run(case):
     m = case.config.model
-    surf = C.read_polydata(case.resolve(m.surface))
-    console.info("surface: %s (%d points)" % (case.resolve(m.surface).name, surf.GetNumberOfPoints()))
+    src = source_surface(case)
+    surf = C.read_polydata(src)
+    console.info("surface: %s (%d points)" % (src.name, surf.GetNumberOfPoints()))
     names = m.cap_names
-    if m.outlets:
-        surf = clip_with_planes(surf, m.outlets)
-        console.info("clipped %d outlet planes" % len(m.outlets))
-    if m.units == 'mm':
+    planes = outlet_planes(case)
+    units = case.config.segmentation.units if case.config.segmentation.image else m.units
+    if planes:
+        surf = clip_with_planes(surf, planes)
+        console.info("clipped %d outlet planes%s" % (len(planes), '' if m.outlets else ' (proposed by the segment stage)'))
+    if units == 'mm':
         surf = _scale(surf, 0.1)
         console.info("converted mm -> cm")
     if m.remesh:
@@ -46,13 +71,13 @@ def run(case):
         console.info("remeshed to %d points" % surf.GetNumberOfPoints())
     surf = C.triangulate_and_clean(surf)
 
-    if m.outlets and names is None:
+    if planes and names is None:
         tmp = C.make_caps(surf)
-        planes = m.outlets
-        if m.units == 'mm':
-            planes = [dict(p, origin=[0.1 * v for v in p['origin']], radius=0.1 * p['radius']) for p in planes]
-        names = plane_names_for_caps(tmp, planes)
-        inlet = m.inlet or next((p['name'] for p in planes if p.get('inlet')), None)
+        pl = planes
+        if units == 'mm':
+            pl = [dict(p, origin=[0.1 * v for v in p['origin']], radius=0.1 * p['radius']) for p in pl]
+        names = plane_names_for_caps(tmp, pl)
+        inlet = m.inlet or next((p['name'] for p in pl if p.get('inlet')), None)
     else:
         inlet = m.inlet
     caps = C.make_caps(surf, inlet=inlet, names=names)

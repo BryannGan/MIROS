@@ -99,17 +99,21 @@ def _voronoi_medial(points: np.ndarray, normals: np.ndarray, r_max: float, r_min
     keep = inward & (r <= r_max) & (r >= r_min)
     log("  %d Voronoi vertices, %d inside the lumen after pruning" % (len(V), keep.sum()))
 
-    # ridge polygons -> edges between kept vertices
+    # ridge polygons -> edges between kept vertices (vectorized: consecutive vertices of each ridge)
     keep_idx = np.full(len(V), -1, dtype=np.int64)
     keep_idx[keep] = np.arange(keep.sum())
-    a, b = [], []
-    for ridge in vor.ridge_vertices:
-        n = len(ridge)
-        for i in range(n):
-            u, w = ridge[i], ridge[(i + 1) % n]
-            if u >= 0 and w >= 0 and keep[u] and keep[w]:
-                a.append(keep_idx[u]); b.append(keep_idx[w])
-    edges = np.unique(np.sort(np.array([a, b], dtype=np.int64).T, axis=1), axis=0)
+    lengths = np.fromiter((len(rv) for rv in vor.ridge_vertices), dtype=np.int64, count=len(vor.ridge_vertices))
+    flat = np.fromiter((v for rv in vor.ridge_vertices for v in rv), dtype=np.int64, count=int(lengths.sum()))
+    starts = np.repeat(np.cumsum(lengths) - lengths, lengths)
+    ends = np.repeat(np.cumsum(lengths), lengths)
+    nxt = np.arange(len(flat)) + 1
+    nxt = np.where(nxt == ends, starts, nxt)                 # wrap around within each ridge
+    u, w = flat, flat[nxt]
+    ok = (u >= 0) & (w >= 0)
+    ok &= keep[np.where(ok, u, 0)] & keep[np.where(ok, w, 0)]
+    pairs = np.sort(np.stack([keep_idx[u[ok]], keep_idx[w[ok]]], axis=1), axis=1)
+    pairs = pairs[pairs[:, 0] != pairs[:, 1]]
+    edges = np.unique(pairs, axis=0)
     return V[keep], r[keep], edges
 
 

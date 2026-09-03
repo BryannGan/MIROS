@@ -1,7 +1,8 @@
 """
 miros — command line.
 
-    miros doctor                     check solvers and Python dependencies
+    miros doctor                     check solvers, Python dependencies and downloaded models
+    miros models list|download NAME  pre-trained SeqSeg models (aorta_ct, aorta_mr, coronary_ct)
     miros init DIR [--surface ...]   write a case.yaml (with detected caps)
     miros run DIR [--from S] [--until S] [--force]
     miros status DIR
@@ -42,6 +43,13 @@ def cmd_doctor(args):
     else:
         console.warn("OneDSolver not found (set MIROS_ONEDSOLVER or solvers.onedsolver, or put it on PATH); "
                      "1D simulation will be unavailable")
+    from .models import MODELS, models_dir, status as model_status
+    st = model_status()
+    console.info("SeqSeg models in %s:" % models_dir())
+    for k, m in MODELS.items():
+        console.info("  %-12s %-8s %s" % (k, 'ready' if st[k] else 'absent', m['description']))
+    if not any(st.values()):
+        console.info("  download one with: miros models download aorta_ct")
     display = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')) or not sys.platform.startswith('linux')
     console.info("display for interactive editors: %s" % ('yes' if display else 'no'))
     return 0
@@ -133,6 +141,27 @@ def cmd_show(args):
     return 0
 
 
+def cmd_models(args):
+    from .models import MODELS, cli_progress, download, models_dir, status
+    if args.what == 'list':
+        st = status()
+        console.table(['model', 'status', 'modality', 'trained in', 'description', 'source'],
+                      [(k, 'ready' if st[k] else 'absent', m['modality'], m['unit'], m['description'], 'doi:' + m['doi'])
+                       for k, m in MODELS.items()], title=str(models_dir()))
+        return 0
+    if not args.name:
+        console.error("give a model name: %s" % ', '.join(MODELS))
+        return 1
+    if args.name not in MODELS:
+        console.error("unknown model %r; known: %s" % (args.name, ', '.join(MODELS)))
+        return 1
+    m = MODELS[args.name]
+    console.info("%s: %s (%.0f MB from Zenodo, %s)" % (args.name, m['description'], m['size'] / 1e6, m['doi']))
+    folder = download(args.name, progress=cli_progress)
+    console.ok("ready: %s" % folder)
+    return 0
+
+
 def cmd_gui(args):
     from .ui.app import run_app
     try:
@@ -200,6 +229,11 @@ def main(argv=None):
     p = sub.add_parser('status', help='which stages are up to date')
     p.add_argument('dir')
     p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser('models', help='pre-trained SeqSeg models: list / download NAME')
+    p.add_argument('what', choices=['list', 'download'])
+    p.add_argument('name', nargs='?', default=None, help='aorta_ct | aorta_mr | coronary_ct')
+    p.set_defaults(fn=cmd_models)
 
     p = sub.add_parser('gui', help='the whole workflow in one window (3D view + steps)')
     p.add_argument('dir', nargs='?', default=None, help='case folder to open (optional)')

@@ -37,6 +37,9 @@ def run(case):
             case.tuning_report.unlink()
         return outputs(case)
 
+    if not bc.flow_split:
+        raise ConfigError("boundary_conditions.flow_split is empty. The caps are now known (%s): set the flow "
+                          "shares in `miros setup` or in case.yaml, then run again." % ', '.join(names))
     unknown = sorted(set(bc.flow_split) - set(names))
     if unknown:
         raise ConfigError("flow_split names %s are not outlets; outlets are %s" % (unknown, names))
