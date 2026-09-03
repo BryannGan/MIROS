@@ -127,3 +127,57 @@ def test_vtk_image_is_converted_for_seqseg(tmp_path):
     assert np.allclose(sitk.GetArrayFromImage(img).ravel(order='C'), np.arange(720))
     # an ITK-readable file is passed through untouched
     assert _image_for_seqseg(case, tmp_path / 'input' / 'scan.nii.gz') == tmp_path / 'input' / 'scan.nii.gz'
+
+
+def test_case_can_carry_its_own_tracing_config(tmp_path):
+    """The GUI saves edited SeqSeg settings inside the case; the stage passes that file to SeqSeg."""
+    import yaml
+    from miros.case import Case
+    from miros.config_edit import set_values
+    from miros.stages.segment import _config_name, _seqseg_configs
+    available = _seqseg_configs()
+    if not available:
+        pytest.skip('seqseg is not installed')
+    (tmp_path / 'input').mkdir()
+    (tmp_path / 'input' / 'scan.nii.gz').write_bytes(b'x')
+    p = tmp_path / 'case.yaml'
+    write_template(p, surface=None, image='input/scan.nii.gz', seg_model='aorta_ct',
+                   seeds=[{'point': [0, 0, 0], 'direction': [0, 0, 1], 'radius': 1.0}])
+    own = tmp_path / 'input' / 'seqseg_config.yaml'
+    full = yaml.safe_load(available[MODELS['aorta_ct']['config']].read_text())
+    full['MAGN_RADIUS'] = 1.5
+    own.write_text(yaml.safe_dump(full))
+    set_values(p, {'segmentation.config_name': 'input/seqseg_config.yaml'})
+    assert _config_name(Case(tmp_path)) == str(own.with_suffix(''))     # what SeqSeg's --config-name wants
+    # a config missing settings is caught before the run, not an hour in
+    thin = yaml.safe_dump({k: v for k, v in list(full.items())[:5]})
+    own.write_text(thin)
+    with pytest.raises(ConfigError, match='missing'):
+        _config_name(Case(tmp_path))
+    set_values(p, {'segmentation.config_name': 'input/gone.yaml'})
+    with pytest.raises(ConfigError, match='no such file'):
+        _config_name(Case(tmp_path))
+
+
+def test_cuts_open_one_end_each_and_refuse_a_mid_vessel_plane():
+    """A cut takes the vessel end it points at: not the whole model, and not a neighbour it crosses."""
+    from miros.geometry.caps import boundary_loops
+    from miros.geometry.clip import clip_with_planes
+    tube = pv.Cylinder(center=(0, 0, 0), direction=(0, 0, 1), radius=0.5, height=6,
+                       resolution=60, capping=True).triangulate().clean()
+    out = pv.wrap(clip_with_planes(tube, [dict(name='inlet', origin=[0, 0, 2.5], normal=[0, 0, 1],
+                                               radius=0.5, inlet=True)]))
+    loops = boundary_loops(out)
+    assert len(loops) == 1
+    z = np.array([q[2] for q in loops[0]])
+    assert z.max() - z.min() < 1e-6                      # the rim is flat, not jagged by one cell
+    # a normal pointing into the model is corrected, not obeyed
+    planes = [dict(name='inlet', origin=[0, 0, 2.5], normal=[0, 0, -1], radius=0.5, inlet=True)]
+    out2 = pv.wrap(clip_with_planes(tube, planes))
+    assert len(boundary_loops(out2)) == 1 and out2.n_points > 0.5 * tube.n_points
+    assert planes[0]['normal'] == [0.0, 0.0, 1.0]
+    # a plane across the middle is not a vessel end: it is refused, and the surface survives
+    out3 = pv.wrap(clip_with_planes(tube, [dict(name='inlet', origin=[0, 0, 2.5], normal=[0, 0, 1], radius=0.5,
+                                                inlet=True),
+                                           dict(name='cap_1', origin=[0, 0, 0], normal=[0, 0, 1], radius=0.5)]))
+    assert len(boundary_loops(out3)) == 1

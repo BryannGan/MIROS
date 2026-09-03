@@ -125,7 +125,13 @@ segmentation:
   image: input/scan.nii.gz            # .nii(.gz) / .mha / .nrrd / .vti / .vtk
   units: mm                           # units of the image coordinates
   model: aorta_ct                     # aorta_ct | aorta_mr | coronary_ct | path to an nnU-Net trainer folder
-  config_name: ''                     # '' = the SeqSeg tracing config that suits the model
+  config_name: ''                     # '' = the SeqSeg tracing config that suits the model; a name
+                                      # SeqSeg ships, or your own file, e.g. input/seqseg_config.yaml
+  max_steps: 1000                     # total tracing steps: how much of the tree is followed
+  max_branches: 100                   # how many branches may be started
+  max_steps_per_branch: 100           # how far along one branch before moving on
+  assembly_threshold: 0.5             # probability at which the segmentation becomes the surface
+  extract_centerline: true            # let SeqSeg centerline the tree; the cuts then come from it
   seeds:
     - {point: [x, y, z], direction: [x2, y2, z2], radius: 1.1}   # where to start, which way, lumen radius
 model:
@@ -133,17 +139,31 @@ model:
 ```
 
 `miros run` then adds a `segment` stage in front of everything else: SeqSeg traces the vessel tree
-from the seeds, MIROS takes its smoothed surface, finds the vessel ends of the closed surface,
-proposes a cut plane a few radii inside each end (`work/outlets_proposed.json`), clips the surface
-open there, and continues as usual. Put your own planes under `model.outlets` to override the
-proposals. The flow splits can stay empty until the caps exist; `miros setup` fills them in.
+from the seeds, MIROS takes its smoothed surface and finds every vessel end on it, listing them in
+`work/outlets_proposed.json` with the ones it would cut marked `use: true`. The preprocess stage
+opens those ends and continues as usual.
+
+**The cuts are yours to approve.** In the window they are the **1 Outlets** step: every end is
+listed and drawn on the surface, solid where it will be cut and faint where it will not, and
+nothing is clipped until you press *Apply cuts*. Tick or untick an end, say which one is the
+inlet, move a cut along its vessel or flip which side it discards. What you approve is written to
+`model.outlets` in `case.yaml`, so the next run repeats it exactly. Editing that list by hand does
+the same thing without the window.
+
+Each cut removes only the piece of surface connected to that one vessel end, so a plane that
+happens to cross a neighbouring vessel leaves it alone. A cut that would split the model instead
+of opening an end is reported by name and skipped rather than applied.
+
+The flow splits can stay empty until the caps exist; `miros setup` fills them in.
 
 In the window (`miros gui`) this is the **0 Segment** step: browse to the image (it is shown as
 three slices you can move with sliders), pick and download the model, create the case, then place
 each seed with two clicks on the slices — the start point and a point a little further along the
 vessel — and press *Segment and open outlets*. The window continues on the Model step with the
-detected caps. Seeds belong to a case, so the seeding controls stay disabled until you press
-*Create case from this image*. A VTK volume (`.vti`, `.vtk`) is converted to `.mha` in `work/`
+detected caps, by way of the Outlets step. Seeds belong to a case, so the seeding controls stay
+disabled until you press *Create case from this image*. The tracing settings sit next to the model:
+total steps, branches, steps per branch, and *all settings…*, which opens the whole SeqSeg config
+and saves your edits as a copy inside the case. A VTK volume (`.vti`, `.vtk`) is converted to `.mha` in `work/`
 for SeqSeg, keeping its spacing, origin and orientation.
 
 The pretrained weights are published by the SeqSeg authors on Zenodo (CC-BY-4.0):

@@ -22,10 +22,10 @@ def outlet_planes(case):
     """model.outlets if given, else the planes the segment stage proposed (if any)."""
     m = case.config.model
     if m.outlets:
-        return list(m.outlets)
+        return [dict(p) for p in m.outlets if p.get('use', True)]
     proposed = case.work / 'outlets_proposed.json'
     if case.config.segmentation.image and proposed.exists():
-        return json.loads(proposed.read_text())
+        return [p for p in json.loads(proposed.read_text()) if p.get('use', True)]
     return []
 
 
@@ -78,6 +78,8 @@ def run(case):
             pl = [dict(p, origin=[0.1 * v for v in p['origin']], radius=0.1 * p['radius']) for p in pl]
         names = plane_names_for_caps(tmp, pl)
         inlet = m.inlet or next((p['name'] for p in pl if p.get('inlet')), None)
+        if inlet not in names:                 # the inlet plane cut no cap of its own
+            inlet = None                       # fall back to the largest cap
     else:
         inlet = m.inlet
     caps = C.make_caps(surf, inlet=inlet, names=names)

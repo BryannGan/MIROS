@@ -71,14 +71,25 @@ def _seqseg_configs():
 
 def _config_name(case) -> str:
     """
-    The SeqSeg tracing config: the one named in case.yaml, else the one that
-    suits the model. Some configs shipped upstream are incomplete (SeqSeg 2.1's
-    `global` has no ADD_RADIUS and dies mid-trace), so the choice is checked here
-    rather than an hour into a run.
+    The SeqSeg tracing config, as SeqSeg's --config-name wants it.
+
+    It can be one of the configs SeqSeg ships (by name), or a YAML file of
+    your own inside the case, e.g. `input/seqseg_config.yaml`, which the
+    GUI writes when the settings are edited. Either way the settings are
+    checked here: some configs shipped upstream are incomplete (SeqSeg
+    2.1's `global` has no ADD_RADIUS and dies mid-trace), and finding that
+    out an hour into a run is no use to anyone.
     """
     sg = case.config.segmentation
     name = sg.config_name or MODELS.get(sg.model, {}).get('config') or 'global_default'
     available = _seqseg_configs()
+    own = case.resolve(name) if ('/' in str(name) or str(name).endswith('.yaml')) else None
+    if own is not None:
+        if not own.exists():
+            raise ConfigError("segmentation.config_name: no such file: %s" % own)
+        available = dict(available)
+        available[str(own.with_suffix(''))] = own
+        name = str(own.with_suffix(''))              # SeqSeg accepts an absolute path without the suffix
     if not available:
         return name                                  # SeqSeg not importable here; let the subprocess complain
     if name not in available:
@@ -91,7 +102,7 @@ def _config_name(case) -> str:
             keys[n] = set(yaml.safe_load(path.read_text(errors='replace')) or {})
         except Exception:                                # noqa: BLE001 - unreadable config
             keys[n] = set()
-    complete = max(keys.values(), key=len, default=set())     # the settings a full config carries
+    complete = max((k for n, k in keys.items() if n != name), key=len, default=set())   # a full config's settings
     missing = sorted(complete - keys.get(name, set()))
     if missing:
         good = sorted(n for n, k in keys.items() if not (complete - k))
@@ -141,6 +152,47 @@ def _image_for_seqseg(case, image: Path) -> Path:
     return target
 
 
+def _inlet_plane(sg) -> dict:
+    """
+    The inlet is where the user put the first seed: a plane through that
+    point, cutting off whatever lies behind it. The seed already carries
+    the two things the cut needs, the direction along the vessel and the
+    radius there, so nothing has to be guessed from the surface.
+    """
+    s = sg.seeds[0]
+    p, d = np.asarray(s.point, float), np.asarray(s.direction, float)
+    n = p - d                                   # away from the vessel: the side to discard
+    ln = float(np.linalg.norm(n))
+    return dict(name='inlet', origin=[float(v) for v in p], radius=float(s.radius), inlet=True,
+                normal=[float(v) for v in (n / ln if ln > 1e-12 else np.array([0.0, 0.0, 1.0]))])
+
+
+def _with_seed_inlet(planes, sg, min_separation: float = 1.5) -> list:
+    """
+    Put the seed's own plane in front as the inlet. Ends in that same piece
+    of vessel are kept as candidates but switched off, so the outlet editor
+    can still show them.
+    """
+    inlet = _inlet_plane(sg)
+    o = np.asarray(inlet['origin'], float)
+    out = [inlet]
+    for q in planes:
+        d = dict(q, inlet=False)
+        if q.get('inlet'):
+            d['use'], d['skipped'] = False, 'the seed is the inlet'
+        elif np.linalg.norm(np.asarray(q['origin'], float) - o) < min_separation * max(q['radius'], inlet['radius']):
+            d['use'], d['skipped'] = False, 'same vessel end as the inlet'
+        out.append(d)
+    n = 0
+    for q in out:
+        if q['inlet']:
+            q['name'] = 'inlet'
+        else:
+            n += 1
+            q['name'] = 'cap_%d' % n
+    return out
+
+
 def run(case):
     sg = case.config.segmentation
     image = case.resolve(sg.image)
@@ -176,9 +228,15 @@ def run(case):
            '--unit', sg.units, '--scale', '%g' % _scale(sg.units, model_units),
            '--max-n-steps', str(sg.max_steps), '--max-n-branches', str(sg.max_branches),
            '--max-n-steps-per-branch', str(sg.max_steps_per_branch),
+           '--assembly-threshold', '%g' % sg.assembly_threshold,
+           '--extract-global-centerline', '1' if sg.extract_centerline else '0',
+           '--cap-surface-cent', '0',       # SeqSeg's own capping is fragile; MIROS clips the ends itself
            '--seeds-json', str(seeds_json)]
     console.info('SeqSeg: %s (%s), config %s, %d seed(s), image units %s, scale %g' % (
         sg.model, dataset, config_name, len(seeds), sg.units, _scale(sg.units, model_units)))
+    console.info('tracing: %d steps total, %d branches, %d steps per branch, assembly at %g%s' % (
+        sg.max_steps, sg.max_branches, sg.max_steps_per_branch, sg.assembly_threshold,
+        ', centerline of the whole tree' if sg.extract_centerline else ''))
     log = out / 'seqseg.log'
     with open(log, 'w', encoding='utf-8', newline='\n') as f:
         proc = subprocess.run(cmd, cwd=str(out), stdout=f, stderr=subprocess.STDOUT)
@@ -198,14 +256,21 @@ def run(case):
     planes = []
     if centerline is not None:
         shutil.copy(centerline, case.work / 'seqseg_centerline.vtp')
-        planes = propose_outlet_planes(read_polydata(centerline), back_off=sg.outlet_back_off)
-        console.info('proposed %d cut planes from the tracked centerline (%s)' % (len(planes), centerline.name))
+        planes = propose_outlet_planes(read_polydata(centerline), back_off=sg.outlet_back_off,
+                                       seed_point=sg.seeds[0].point)
+        planes = _with_seed_inlet(planes, sg)
+        console.info('%d vessel ends from the tracked centerline (%s)' % (len(planes), centerline.name))
     if not planes:
         (case.work / 'seqseg_centerline.vtp').unlink(missing_ok=True)
         console.info('finding the vessel ends on the surface itself (medial axis from the seed) ...')
         planes = propose_from_closed_surface(read_polydata(surface), sg.seeds[0].point, back_off=sg.outlet_back_off)
-        console.info('proposed %d cut planes (%s)' % (len(planes), ', '.join(p['name'] for p in planes)))
+        planes = _with_seed_inlet(planes, sg)
+        console.info('%d vessel ends found on the surface' % len(planes))
     if not planes:
         console.warn('no vessel ends found; give the outlet planes under model.outlets')
     (case.work / 'outlets_proposed.json').write_text(json.dumps(planes, indent=2))
+    on = [p['name'] for p in planes if p.get('use', True)]
+    console.info('proposed as cuts: %s' % (', '.join(on) if on else 'none'))
+    console.info('review them on the Outlets step (`miros gui`) or in %s before the surface is clipped'
+                 % (case.work / 'outlets_proposed.json'))
     return outputs(case)

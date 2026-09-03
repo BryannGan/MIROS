@@ -41,6 +41,7 @@ class SegmentPage:
         r = QtWidgets.QHBoxLayout(); r.addWidget(self.image_edit); r.addWidget(b)
         form.addRow('image (.nii.gz / .mha / .nrrd)', r)
         self.units = QtWidgets.QComboBox(); self.units.addItems(['mm', 'cm'])
+        self.units.currentTextChanged.connect(self._units_changed)
         self.units_hint = QtWidgets.QLabel(''); self.units_hint.setStyleSheet('color: gray')
         r2 = QtWidgets.QHBoxLayout(); r2.addWidget(self.units); r2.addWidget(self.units_hint); r2.addStretch()
         form.addRow('image units', r2)
@@ -52,7 +53,26 @@ class SegmentPage:
         self.download_btn = QtWidgets.QPushButton('Download'); self.download_btn.clicked.connect(self._download)
         r3 = QtWidgets.QHBoxLayout(); r3.addWidget(self.model, 1); r3.addWidget(self.model_status); r3.addWidget(self.download_btn)
         form.addRow('model', r3)
-        self.model.currentIndexChanged.connect(lambda *_: self._model_status())
+        self.model.currentIndexChanged.connect(lambda *_: (self._model_status(), self._fill_tracing_configs()))
+        self.tracing = QtWidgets.QComboBox()
+        self.steps = QtWidgets.QSpinBox(); self.steps.setRange(10, 100000); self.steps.setValue(1000)
+        self.steps.setToolTip('Total tracing steps. Each step follows the vessel about one radius further, '
+                              'so this sets how much of the tree is segmented (and most of the run time).')
+        self.branches = QtWidgets.QSpinBox(); self.branches.setRange(1, 1000); self.branches.setValue(100)
+        self.branches.setToolTip('How many branches SeqSeg may start.')
+        self.steps_branch = QtWidgets.QSpinBox(); self.steps_branch.setRange(1, 100000); self.steps_branch.setValue(100)
+        self.steps_branch.setToolTip('How far it follows one branch before moving to the next.')
+        self.centerline_box = QtWidgets.QCheckBox('centerline the tree (outlet cuts come from it)')
+        self.centerline_box.setChecked(True)
+        r5 = QtWidgets.QHBoxLayout()
+        for label, wdg in (('config', self.tracing), ('total steps', self.steps),
+                           ('branches', self.branches), ('steps per branch', self.steps_branch)):
+            r5.addWidget(QtWidgets.QLabel(label)); r5.addWidget(wdg)
+        self.edit_cfg = QtWidgets.QPushButton('all settings…')
+        self.edit_cfg.setToolTip('Open the whole tracing config: every SeqSeg setting, saved as a copy in the case')
+        self.edit_cfg.clicked.connect(self.edit_config)
+        r5.addWidget(self.centerline_box); r5.addWidget(self.edit_cfg); r5.addStretch()
+        form.addRow('tracing', r5)
         self.case_edit = QtWidgets.QLineEdit()
         b2 = QtWidgets.QPushButton('Browse…'); b2.clicked.connect(self._browse_case_dir)
         r4 = QtWidgets.QHBoxLayout(); r4.addWidget(self.case_edit); r4.addWidget(b2)
@@ -66,17 +86,20 @@ class SegmentPage:
         lay.addWidget(QtWidgets.QLabel('<b>Seeds</b> — click a slice for the start point, click again a little further '
                                        'along the vessel for the direction. Use the sliders in the 3D view to move the slices.'))
         srow = QtWidgets.QHBoxLayout()
-        srow.addWidget(QtWidgets.QLabel('radius at the seed'))
-        self.radius = QtWidgets.QDoubleSpinBox(); self.radius.setRange(0.01, 100); self.radius.setDecimals(2); self.radius.setValue(1.0)
+        srow.addWidget(QtWidgets.QLabel('vessel radius at the seed'))
+        self.radius = QtWidgets.QDoubleSpinBox(); self.radius.setRange(0.01, 1000); self.radius.setDecimals(2); self.radius.setValue(1.0)
         srow.addWidget(self.radius)
-        self.radius_unit = QtWidgets.QLabel('[cm]'); srow.addWidget(self.radius_unit)
+        self._units = self.units.currentText()
+        self.radius_unit = QtWidgets.QLabel('[%s]' % self._units)
+        srow.addWidget(self.radius_unit)
+        srow.addWidget(QtWidgets.QLabel('— seed points and this radius are in image coordinates, '
+                                        'so they follow the image units above'))
         srow.addStretch()
-        self.pick_btn = QtWidgets.QPushButton('Add seed by clicking'); self.pick_btn.setCheckable(True)
+        self.pick_btn = QtWidgets.QPushButton('Add seed by clicking'); self.pick_btn.setCheckable(True)  # noqa: E501
         self.pick_btn.toggled.connect(self._toggle_pick)
         self.pick_btn.setEnabled(False)
         srow.addWidget(self.pick_btn)
         lay.addLayout(srow)
-        self.units.currentTextChanged.connect(lambda u: self.radius_unit.setText('[%s]' % u))
         self.seed_table = QtWidgets.QTableWidget(0, 4)
         self.seed_table.setHorizontalHeaderLabels(['point', 'direction', 'radius', ''])
         self.seed_table.verticalHeader().setVisible(False)
@@ -94,7 +117,89 @@ class SegmentPage:
         lay.addWidget(self.message)
         lay.addStretch()
         self._model_status()
+        self._fill_tracing_configs()          # after the tracing widgets exist
         self._set_seeding_enabled(False)
+
+    def _fill_tracing_configs(self):
+        """The SeqSeg tracing configs on this machine, with the model's own first."""
+        from ..models import MODELS
+        from ..stages.segment import _seqseg_configs
+        default = MODELS.get(self.model.currentData(), {}).get('config', '')
+        names = sorted(_seqseg_configs())
+        current = self.tracing.currentData()
+        self.tracing.blockSignals(True)
+        self.tracing.clear()
+        self.tracing.addItem('%s (suits this model)' % default if default else 'default', '')
+        for n in names:
+            self.tracing.addItem(n, n)
+        if current:
+            i = self.tracing.findData(current)
+            self.tracing.setCurrentIndex(max(i, 0))
+        self.tracing.blockSignals(False)
+
+    def edit_config(self):
+        """Show the chosen tracing config, and save edits as a copy inside the case."""
+        from ..models import MODELS
+        from ..stages.segment import _seqseg_configs
+        if self.main.case is None:
+            return self.main.error('create the case first: the edited settings are saved inside it')
+        own = self.main.case.dir / 'input' / 'seqseg_config.yaml'
+        if own.exists():
+            text, source = own.read_text(), str(own)
+        else:
+            name = self.tracing.currentData() or MODELS.get(self.model.currentData(), {}).get('config', '')
+            shipped = _seqseg_configs().get(name)
+            if shipped is None:
+                return self.main.error('cannot find the config %r that SeqSeg ships' % name)
+            text, source = shipped.read_text(), '%s (SeqSeg\'s own)' % name
+        W = self.W
+        dlg = W.QDialog(self.main.win)
+        dlg.setWindowTitle('SeqSeg tracing settings')
+        dlg.resize(760, 720)
+        lay = W.QVBoxLayout(dlg)
+        lay.addWidget(W.QLabel('From %s. Saving writes a copy to %s and points the case at it, so SeqSeg\'s '
+                               'own configs stay untouched.' % (source, own)))
+        editor = W.QPlainTextEdit(text)
+        editor.setFont(self.main.QtGui.QFontDatabase.systemFont(self.main.QtGui.QFontDatabase.FixedFont))
+        lay.addWidget(editor, 1)
+        note = W.QLabel(''); note.setStyleSheet('color: #b3261e'); lay.addWidget(note)
+        buttons = W.QDialogButtonBox(W.QDialogButtonBox.Save | W.QDialogButtonBox.Cancel)
+        lay.addWidget(buttons)
+        buttons.rejected.connect(dlg.reject)
+
+        def save():
+            import yaml
+            try:
+                data = yaml.safe_load(editor.toPlainText())
+            except Exception as e:                   # noqa: BLE001
+                return note.setText('not valid YAML: %s' % e)
+            if not isinstance(data, dict) or not data:
+                return note.setText('the settings must be a mapping of NAME: value')
+            own.parent.mkdir(parents=True, exist_ok=True)
+            own.write_text(editor.toPlainText(), encoding='utf-8')
+            from ..config_edit import set_values
+            set_values(self.main.case.yaml, {'segmentation.config_name': 'input/seqseg_config.yaml'})
+            self.main.refresh_status()
+            self.message.setText('tracing settings saved to %s (%d settings)' % (own, len(data)))
+            dlg.accept()
+        buttons.accepted.connect(save)
+        dlg.exec_()
+
+    def _units_changed(self, unit: str):
+        """Seeds live in image coordinates: convert what is already on screen to the new unit."""
+        old = getattr(self, '_units', None)
+        self._units = unit
+        self.radius_unit.setText('[%s]' % unit)
+        f = {('mm', 'cm'): 0.1, ('cm', 'mm'): 10.0}.get((old, unit))
+        if f is None:
+            return
+        self.radius.setValue(self.radius.value() * f)
+        for s in self.seeds:
+            s['point'] = [v * f for v in s['point']]
+            s['direction'] = [v * f for v in s['direction']]
+            s['radius'] = s['radius'] * f
+        self._refresh_seed_table()
+        self.main.viewer.show_seeds(self.seeds)
 
     def _set_seeding_enabled(self, on: bool):
         """Seeds belong to a case, so they can only be placed once one exists."""
@@ -171,7 +276,11 @@ class SegmentPage:
         self.image_path = path
         extent = max(np.asarray(size) * np.asarray(spacing))
         mm = extent > 60
+        self.units.blockSignals(True)                 # a new image, not a correction: convert nothing
         self.units.setCurrentText('mm' if mm else 'cm')
+        self.units.blockSignals(False)
+        self._units = self.units.currentText()
+        self.radius_unit.setText('[%s]' % self._units)
         self.units_hint.setText('extent %.1f, spacing %s → looks like %s' % (
             extent, 'x'.join('%.2f' % s for s in spacing), 'mm' if mm else 'cm'))
         self.radius.setValue(10.0 if mm else 1.0)
@@ -264,6 +373,15 @@ class SegmentPage:
         i = self.model.findData(sg.model)
         if i >= 0:
             self.model.setCurrentIndex(i)
+        self._fill_tracing_configs()
+        if sg.config_name and ('/' in sg.config_name or sg.config_name.endswith('.yaml')):
+            self.tracing.insertItem(1, 'this case: %s' % sg.config_name, sg.config_name)
+        j = self.tracing.findData(sg.config_name or '')
+        self.tracing.setCurrentIndex(max(j, 0))
+        self.steps.setValue(sg.max_steps)
+        self.branches.setValue(sg.max_branches)
+        self.steps_branch.setValue(sg.max_steps_per_branch)
+        self.centerline_box.setChecked(bool(sg.extract_centerline))
         self.seeds = [dict(point=list(s.point), direction=list(s.direction), radius=float(s.radius)) for s in sg.seeds]
         self._set_seeding_enabled(True)
         self._refresh_seed_table()
@@ -330,7 +448,12 @@ class SegmentPage:
         if not self.seeds:
             return self.main.error('place at least one seed')
         set_values(self.main.case.yaml, {'segmentation.units': self.units.currentText(),
-                                         'segmentation.model': self.model.currentData()})
+                                         'segmentation.model': self.model.currentData(),
+                                         'segmentation.config_name': self.tracing.currentData() or '',
+                                         'segmentation.max_steps': int(self.steps.value()),
+                                         'segmentation.max_branches': int(self.branches.value()),
+                                         'segmentation.max_steps_per_branch': int(self.steps_branch.value()),
+                                         'segmentation.extract_centerline': self.centerline_box.isChecked()})
         set_seeds(self.main.case.yaml, self.seeds)
         self.main.refresh_status()
         self.message.setText('saved %d seed(s) to %s' % (len(self.seeds), self.main.case.yaml))
@@ -346,10 +469,15 @@ class SegmentPage:
             return self.main.error('download the model first')
         self.save_seeds()
         self.pick_btn.setChecked(False)
-        self.main.start_run(None, False, until='preprocess', on_done=self._segment_done)
+        self.main.start_run(None, False, until='segment', on_done=self._segment_done)
 
     def _segment_done(self, ok):
-        if ok:
-            self.main.load_case(self.main.case.dir)
+        if not ok:
+            return
+        self.main.load_case(self.main.case.dir)
+        if self.main.outlets.planes:
+            self.main.tabs.setCurrentIndex(self.main.TAB_OUTLETS)
+            self.main.status('segmentation done — review the cuts that open the vessel ends')
+        else:
             self.main.tabs.setCurrentIndex(self.main.TAB_MODEL)
-            self.main.status('segmentation done — caps detected, continue with the inflow')
+            self.main.status('segmentation done')

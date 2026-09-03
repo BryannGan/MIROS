@@ -166,6 +166,45 @@ class Viewer:
             self._camera_set = True
         self.plotter.render()
 
+    PLANE_ON, PLANE_OFF, PLANE_SEL = 'steelblue', '#b9b9b9', 'gold'
+
+    def show_planes(self, surf, planes, selected=None, pick_callback=None):
+        """The surface with one disc per vessel end: solid = will be cut, faint = candidate."""
+        if self.plotter is None:
+            return
+        import pyvista as pv
+        self.clear()
+        self.plotter.add_mesh(pv.wrap(surf), name='wall', **self.WALL)
+        labels, points = [], []
+        for i, p in enumerate(planes):
+            o = np.asarray(p['origin'], float)
+            n = np.asarray(p['normal'], float)
+            n = n / max(np.linalg.norm(n), 1e-12)
+            r = float(p.get('radius', 0.1))
+            disc = pv.Disc(center=o, inner=0.0, outer=1.3 * r, normal=n, c_res=48)
+            on = bool(p.get('use', True))
+            color = self.PLANE_SEL if i == selected else (
+                self.INLET if (on and p.get('inlet')) else (self.PLANE_ON if on else self.PLANE_OFF))
+            self.actors[i] = self.plotter.add_mesh(disc, color=color, opacity=0.95 if on else 0.35,
+                                                   name='plane%d' % i)
+            arrow = pv.Arrow(start=o, direction=n, scale=1.6 * r)
+            self.plotter.add_mesh(arrow, color=color, opacity=0.9 if on else 0.3, name='arrow%d' % i)
+            if on:
+                points.append(o + 1.6 * r * n)
+                labels.append('%s%s' % (p.get('name', ''), ' (inlet)' if p.get('inlet') else ''))
+        if points:
+            self.plotter.add_point_labels(np.array(points), labels, name='plane_labels', font_size=12,
+                                          point_size=0, shape_opacity=0.6, always_visible=True)
+        if pick_callback is not None and self.can_pick:
+            self._pick_cb = pick_callback
+            self.plotter.enable_surface_point_picking(callback=pick_callback, show_message=False, show_point=False,
+                                                      left_clicking=True, pickable_window=False)
+            self.plotter.add_text('click a disc to select that cut', position='lower_left', font_size=10, name='hint')
+        if not self._camera_set:
+            self.plotter.reset_camera()
+            self._camera_set = True
+        self.plotter.render()
+
     def show_seeds(self, seeds, pending=None):
         if self.plotter is None:
             return
@@ -370,7 +409,7 @@ class _LineWriter(io.TextIOBase):
             self.buf = ''
 
 
-def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage, until=None) -> None:
+def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage, until=None, only=None) -> None:
     """The pipeline with plain-text console output routed to emit_line; raises on failure."""
     from ..case import Case
     from . import console
@@ -379,7 +418,7 @@ def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage, until=
     console.set_interactive(False)           # a stage must never open a blocking window in this thread
     try:
         with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-            Case(case_dir).run(from_stage=from_stage, until=until, force=force, progress=emit_stage)
+            Case(case_dir).run(from_stage=from_stage, until=until, force=force, only=only, progress=emit_stage)
     finally:
         w.flush()
         console.set_plain(False)
@@ -389,7 +428,7 @@ def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage, until=
 # main window
 
 class MainWindow:
-    TAB_SEGMENT, TAB_MODEL, TAB_INFLOW, TAB_TARGETS, TAB_RUN, TAB_RESULTS = range(6)
+    TAB_SEGMENT, TAB_OUTLETS, TAB_MODEL, TAB_INFLOW, TAB_TARGETS, TAB_RUN, TAB_RESULTS = range(7)
 
     def __init__(self, case_dir=None, offscreen: bool = False, start_tab: int = 1):
         _require_qt()
@@ -430,9 +469,12 @@ class MainWindow:
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
 
+        from .outlets_page import OutletsPage
         from .segment_page import SegmentPage
         self.segment = SegmentPage(self)
         self.tabs.addTab(self.segment.widget, '0  Segment')
+        self.outlets = OutletsPage(self)
+        self.tabs.addTab(self.outlets.widget, '1  Outlets')
         self._build_model_tab()
         self._build_inflow_tab()
         self._build_bc_tab()
@@ -589,10 +631,15 @@ class MainWindow:
                 self.caps, self.names, self.surf = [], [], None
                 self._enable_tabs(False)
                 self.tabs.setTabEnabled(self.TAB_RUN, True)
-                self.model_info.setText('<b>%s</b> — image case: place the seeds on the Segment step and run it '
-                                        'to get the caps.' % self.case.config.name)
+                ends = self.outlets.load_from_case()
+                self.tabs.setTabEnabled(self.TAB_OUTLETS, ends)
+                self.model_info.setText('<b>%s</b> — image case: %s' % (
+                    self.case.config.name,
+                    'review the cuts on the Outlets step' if ends else
+                    'place the seeds on the Segment step and run it'))
                 self.refresh_status()
                 return
+            self.outlets.load_from_case()
             src = self.case.surface_work
             info = self.case.caps_info()
             inlet, names = info['inlet'], info['names_by_area']
@@ -614,6 +661,8 @@ class MainWindow:
         self.model_info.setText('<b>%s</b> — %d caps, inlet %s, units %s<br>%s' % (
             self.case.config.name, len(caps), self.names[self.inlet_row], m.units, self.case.yaml))
         self._enable_tabs(True)
+        self.tabs.setTabEnabled(self.TAB_OUTLETS, bool(self.case.config.model.outlets) or
+                                (self.case.work / 'outlets_proposed.json').exists())
         if show_model:
             self.viewer.show_model(self.surf, self.caps, self.names, self.inlet_row, pick_callback=self._picked)
         self._fill_bc_form()
@@ -1050,7 +1099,7 @@ class MainWindow:
         i = STAGES.index(stage)
         self.stage_table.item(i, 1).setText({'start': 'running…', 'done': 'done', 'fresh': 'fresh', 'skipped': 'skipped'}[event])
 
-    def start_run(self, from_stage, force, until=None, on_done=None):
+    def start_run(self, from_stage, force, until=None, on_done=None, only=None):
         if self.case is None:
             return self.error('create or open a case first')
         if self.worker is not None:
@@ -1071,7 +1120,8 @@ class MainWindow:
         class Worker(QtCore.QThread):
             def run(w):
                 try:
-                    run_case_blocking(case_dir, from_stage, force, em.line.emit, em.stage.emit, until=until)
+                    run_case_blocking(case_dir, from_stage, force, em.line.emit, em.stage.emit, until=until,
+                                      only=only)
                     em.done.emit(True, '')
                 except Exception:
                     em.done.emit(False, traceback.format_exc())

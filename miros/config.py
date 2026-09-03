@@ -33,9 +33,11 @@ class SegmentationConfig:
     model: str = 'aorta_ct'                    # aorta_ct | aorta_mr | coronary_ct | path to an nnU-Net trainer folder
     seeds: List[SeedConfig] = field(default_factory=list)
     config_name: str = ''                      # SeqSeg tracing config; empty = the one that suits the model
-    max_steps: int = 1000
-    max_branches: int = 100
-    max_steps_per_branch: int = 100
+    max_steps: int = 1000                      # total tracing steps: how much of the tree is followed
+    max_branches: int = 100                    # how many branches may be started
+    max_steps_per_branch: int = 100            # how far along one branch before moving on
+    assembly_threshold: float = 0.5            # probability at which the assembled segmentation becomes surface
+    extract_centerline: bool = True            # ask SeqSeg for a centerline of the whole tree (used for the outlets)
     outlet_back_off: float = 2.5               # radii to walk back from each tracked vessel end before cutting
 
 
@@ -281,9 +283,11 @@ segmentation:                   # optional: segment the vessel from an image wit
   #  - {{point: [x, y, z], direction: [x2, y2, z2], radius: 1.1}}   # world coordinates; direction = a second
   #                                                              point a little further along the vessel
   config_name: ''               # SeqSeg tracing config; '' picks the one that suits the model
-  max_steps: 1000
-  max_branches: 100
-  max_steps_per_branch: 100
+  max_steps: 1000               # total tracing steps: how much of the tree SeqSeg follows
+  max_branches: 100             # how many branches it may start
+  max_steps_per_branch: 100     # how far it follows one branch before moving on
+  assembly_threshold: 0.5       # probability at which the assembled segmentation becomes the surface
+  extract_centerline: true      # let SeqSeg centerline the whole tree (the outlet cuts then come from it)
   outlet_back_off: 2.5          # radii to walk back from each vessel end before cutting it open
 
 model:

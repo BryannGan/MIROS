@@ -97,3 +97,26 @@ def set_values(path, values: Dict[str, object]) -> None:
         node[keys[-1]] = value
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         y.dump(data, f)
+
+
+def set_outlets(path, planes) -> None:
+    """model.outlets = the reviewed cut planes (flow style, one line each)."""
+    path = Path(path)
+    y = _yaml()
+    with open(path, 'r', encoding='utf-8') as f:
+        data = y.load(f) or CommentedMap()
+    model = data.setdefault('model', CommentedMap())
+    seq = CommentedSeq()
+    for p in planes:
+        m = CommentedMap()
+        m['name'] = str(p.get('name', ''))
+        m['origin'] = [round(float(v), 5) for v in p['origin']]
+        m['normal'] = [round(float(v), 6) for v in p['normal']]
+        m['radius'] = round(float(p['radius']), 5)
+        m['inlet'] = bool(p.get('inlet', False))
+        m['use'] = bool(p.get('use', True))
+        m.fa.set_flow_style()
+        seq.append(m)
+    model['outlets'] = seq
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        y.dump(data, f)
