@@ -52,6 +52,10 @@ def init_logging(outputDir="./"):
         logger.addHandler(console_handler)
 
     logFile = os.path.join(outputDir, get_log_file_name())
+    for h in list(logger.handlers):          # MIROS: never stack handlers over repeated runs
+        if isinstance(h, logging.FileHandler):
+            logger.removeHandler(h)
+            h.close()
     file_handler = logging.FileHandler(logFile, mode="w")
     logger.addHandler(file_handler)
     file_handler.setFormatter(formatter)

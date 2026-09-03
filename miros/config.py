@@ -215,8 +215,6 @@ def validate(cfg: CaseConfig) -> None:
     if sg.image:
         if sg.units not in ('cm', 'mm'):
             raise ConfigError("segmentation.units must be 'cm' or 'mm'")
-        if not sg.seeds:
-            raise ConfigError("segmentation.seeds: at least one seed (point, direction, radius) is required")
         for k, sd in enumerate(sg.seeds):
             if len(sd.point) != 3 or len(sd.direction) != 3:
                 raise ConfigError("segmentation.seeds[%d]: point and direction need 3 coordinates" % k)
@@ -235,10 +233,7 @@ def validate(cfg: CaseConfig) -> None:
     if bc.mode == 'file' and not bc.file:
         raise ConfigError("boundary_conditions.file is required when mode is 'file'")
     if bc.mode == 'tune':
-        if not bc.flow_split and not sg.image:
-            raise ConfigError("boundary_conditions.flow_split is required when mode is 'tune' "
-                              "(percent of flow per outlet name)")
-        if bc.flow_split:                     # may stay empty until segmentation has produced the caps
+        if bc.flow_split:                     # may stay empty until the caps are known (see stages/tune.py)
             total = sum(bc.flow_split.values())
             if abs(total - 100.0) > 0.5:
                 raise ConfigError("boundary_conditions.flow_split sums to %.1f, must be 100" % total)

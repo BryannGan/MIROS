@@ -11,6 +11,7 @@ Modifications by MIROS:
 - `centerlines.py`: `sv_centerlines()` no longer imports the `sv` binary module
   (it raises with guidance); `Centerlines.from_polydata()` added so centerlines
   computed by `miros.geometry` can be passed in.
-- No other functional changes. `mesh.py`, `io_0d.py`, `io_1d.py`, `parameters.py`,
-  `models.py`, `utils.py`, `io_headers.py`, `manage.py`, `generate_1d_mesh.py` are
-  verbatim.
+- `mesh.py`: the adaptive segmentation seeds `pwlf.PiecewiseLinFit(..., seed=0)`, so
+  repeated runs of the same case produce the same 1D segments.
+- No other functional changes. `io_0d.py`, `io_1d.py`, `parameters.py`, `models.py`,
+  `utils.py`, `io_headers.py`, `manage.py`, `generate_1d_mesh.py` are verbatim.

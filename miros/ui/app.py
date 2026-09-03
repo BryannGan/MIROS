@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -110,6 +111,81 @@ class Viewer:
         for i, c in enumerate(caps):
             self.actors[i].prop.color = self.SELECTED if i == selected else (self.INLET if i == inlet_row else self.OUTLET)
         self.plotter.render()
+
+    # ---- image slices and seeds (Segment step) ----------------------------
+    def show_image(self, grid):
+        """Three orthogonal slices of an ImageData with sliders to move them."""
+        if self.plotter is None:
+            return
+        import pyvista as pv
+        self.clear()
+        self._image = grid
+        b = grid.bounds
+        lo, hi = np.array(b[0::2]), np.array(b[1::2])
+        self._slice_pos = 0.5 * (lo + hi)
+        vals = grid.point_data['intensity']
+        clim = (float(np.percentile(vals, 1)), float(np.percentile(vals, 99)))
+        self._slice_clim = clim
+
+        def draw():
+            x, y, z = self._slice_pos
+            self.plotter.add_mesh(grid.slice(normal='x', origin=(x, y, z)), name='slice_x', cmap='gray', clim=clim, show_scalar_bar=False)
+            self.plotter.add_mesh(grid.slice(normal='y', origin=(x, y, z)), name='slice_y', cmap='gray', clim=clim, show_scalar_bar=False)
+            self.plotter.add_mesh(grid.slice(normal='z', origin=(x, y, z)), name='slice_z', cmap='gray', clim=clim, show_scalar_bar=False)
+            self.plotter.render()
+        self._draw_slices = draw
+        draw()
+        for i, (axis, y0) in enumerate((('x', 0.10), ('y', 0.16), ('z', 0.22))):
+            def cb(v, i=i):
+                self._slice_pos[i] = v
+                draw()
+            self.plotter.add_slider_widget(cb, rng=(lo[i], hi[i]), value=self._slice_pos[i], title=axis,
+                                           pointa=(0.02, y0), pointb=(0.22, y0), style='modern', title_height=0.015,
+                                           slider_width=0.015, tube_width=0.004, fmt='%.1f')
+        self.plotter.add_axes()
+        if not self._camera_set:
+            self.plotter.reset_camera()
+            self._camera_set = True
+        self.plotter.render()
+
+    def show_seeds(self, seeds, pending=None):
+        if self.plotter is None:
+            return
+        import pyvista as pv
+        self.plotter.remove_actor('seeds', render=False)
+        self.plotter.remove_actor('seed_dirs', render=False)
+        self.plotter.remove_actor('seed_pending', render=False)
+        self.plotter.remove_actor('seed_labels', render=False)
+        if seeds:
+            pts = np.array([s['point'] for s in seeds])
+            self.plotter.add_mesh(pv.PolyData(pts), name='seeds', color='crimson', point_size=14, render_points_as_spheres=True)
+            lines = [pv.Line(s['point'], s['direction']) for s in seeds]
+            self.plotter.add_mesh(pv.merge(lines), name='seed_dirs', color='gold', line_width=4)
+            self.plotter.add_point_labels(pts, ['seed %d (r %.2f)' % (i + 1, s['radius']) for i, s in enumerate(seeds)],
+                                          name='seed_labels', font_size=11, point_size=0, shape_opacity=0.6, always_visible=True)
+        if pending is not None:
+            self.plotter.add_mesh(pv.PolyData(np.array([pending])), name='seed_pending', color='orange', point_size=14,
+                                  render_points_as_spheres=True)
+        self.plotter.render()
+
+    def enable_slice_picking(self, callback):
+        if not self.can_pick:
+            return
+        try:
+            self.plotter.disable_picking()
+        except Exception:
+            pass
+        self.plotter.enable_surface_point_picking(callback=callback, show_message=False, show_point=False,
+                                                  left_clicking=True, pickable_window=False)
+        self.plotter.add_text('click a slice to place a seed point', position='lower_left', font_size=10, name='hint')
+
+    def disable_pick(self):
+        if self.can_pick:
+            try:
+                self.plotter.disable_picking()
+            except Exception:
+                pass
+            self.plotter.remove_actor('hint', render=True)
 
     # ---- 1D results ------------------------------------------------------
     UNITS = {'pressure_mmHg': 'mmHg', 'flow': 'mL/s', 'area': 'cm²'}
@@ -239,15 +315,16 @@ class _LineWriter(io.TextIOBase):
             self.buf = ''
 
 
-def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage) -> None:
+def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage, until=None) -> None:
     """The pipeline with plain-text console output routed to emit_line; raises on failure."""
     from ..case import Case
     from . import console
     w = _LineWriter(emit_line)
     console.set_plain(True)                  # no ANSI colours / box drawing in the log pane
+    console.set_interactive(False)           # a stage must never open a blocking window in this thread
     try:
         with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-            Case(case_dir).run(from_stage=from_stage, force=force, progress=emit_stage)
+            Case(case_dir).run(from_stage=from_stage, until=until, force=force, progress=emit_stage)
     finally:
         w.flush()
         console.set_plain(False)
@@ -257,7 +334,9 @@ def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage) -> Non
 # main window
 
 class MainWindow:
-    def __init__(self, case_dir=None, offscreen: bool = False, start_tab: int = 0):
+    TAB_SEGMENT, TAB_MODEL, TAB_INFLOW, TAB_TARGETS, TAB_RUN, TAB_RESULTS = range(6)
+
+    def __init__(self, case_dir=None, offscreen: bool = False, start_tab: int = 1):
         _require_qt()
         from qtpy import QtCore, QtWidgets, QtGui
         self.QtCore, self.W, self.QtGui = QtCore, QtWidgets, QtGui
@@ -296,6 +375,9 @@ class MainWindow:
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
 
+        from .segment_page import SegmentPage
+        self.segment = SegmentPage(self)
+        self.tabs.addTab(self.segment.widget, '0  Segment')
         self._build_model_tab()
         self._build_inflow_tab()
         self._build_bc_tab()
@@ -304,6 +386,7 @@ class MainWindow:
         self._enable_tabs(False)
         self.win.resize(1400, 800)
         self.win.statusBar()
+        self.tabs.setCurrentIndex(self.TAB_MODEL)
 
         if case_dir is not None:
             self.load_case(Path(case_dir))
@@ -311,11 +394,12 @@ class MainWindow:
 
     # ------------------------------------------------------------ helpers
     def _enable_tabs(self, loaded: bool):
-        for i in range(1, 5):
+        for i in (self.TAB_INFLOW, self.TAB_TARGETS, self.TAB_RUN, self.TAB_RESULTS):
             self.tabs.setTabEnabled(i, loaded)
         if hasattr(self, 'model_next'):
             self.model_next.setEnabled(loaded)
-            self.model_next_hint.setText('' if loaded else 'Create a case from the surface, or open an existing one, to continue.')
+            self.model_next_hint.setText('' if loaded else 'Create a case from the surface (or from an image on the '
+                                                            'Segment step), or open an existing one, to continue.')
 
     def status(self, msg: str):
         self.win.statusBar().showMessage(msg, 8000)
@@ -432,7 +516,7 @@ class MainWindow:
         self.load_case(d)
         self.status('created %s' % y)
 
-    def load_case(self, d: Path):
+    def load_case(self, d: Path, show_model: bool = True):
         from ..case import Case
         from ..config import ConfigError
         from ..geometry import caps as C
@@ -441,10 +525,28 @@ class MainWindow:
         except (ConfigError, FileNotFoundError) as e:
             return self.error(str(e))
         m = self.case.config.model
-        src = self.case.resolve(m.surface)
+        self.win.setWindowTitle('MIROS — %s' % self.case.config.name)
+        self.case_edit.setText(str(self.case.dir))
+        if self.case.config.segmentation.image:
+            # an image case: the caps exist only once the segment + preprocess stages have run
+            self.segment.load_from_case()
+            if not (self.case.surface_work.exists() and self.case.caps_json.exists()):
+                self.caps, self.names, self.surf = [], [], None
+                self._enable_tabs(False)
+                self.tabs.setTabEnabled(self.TAB_RUN, True)
+                self.model_info.setText('<b>%s</b> — image case: place the seeds on the Segment step and run it '
+                                        'to get the caps.' % self.case.config.name)
+                self.refresh_status()
+                return
+            src = self.case.surface_work
+            info = self.case.caps_info()
+            inlet, names = info['inlet'], info['names_by_area']
+        else:
+            src = self.case.resolve(m.surface)
+            inlet, names = m.inlet, m.cap_names
         try:
             self.surf = C.read_polydata(src)
-            caps = C.make_caps(self.surf, inlet=m.inlet, names=m.cap_names)
+            caps = C.make_caps(self.surf, inlet=inlet, names=names)
         except Exception as e:
             return self.error(str(e))
         caps.sort(key=lambda c: -c.area)
@@ -453,13 +555,12 @@ class MainWindow:
         self.inlet_row = next(i for i, c in enumerate(caps) if c.is_inlet)
         self.selected = None
         self.surface_edit.setText(str(src))
-        self.case_edit.setText(str(self.case.dir))
         self.units.setCurrentText(m.units)
         self.model_info.setText('<b>%s</b> — %d caps, inlet %s, units %s<br>%s' % (
             self.case.config.name, len(caps), self.names[self.inlet_row], m.units, self.case.yaml))
-        self.win.setWindowTitle('MIROS — %s' % self.case.config.name)
         self._enable_tabs(True)
-        self.viewer.show_model(self.surf, self.caps, self.names, self.inlet_row, pick_callback=self._picked)
+        if show_model:
+            self.viewer.show_model(self.surf, self.caps, self.names, self.inlet_row, pick_callback=self._picked)
         self._fill_bc_form()
         self._load_inflow_into_editor()
         self.refresh_status()
@@ -494,12 +595,13 @@ class MainWindow:
         def refresh():
             f = interp1d(self.x_ctrl, self.y_ctrl, kind='quadratic', fill_value='extrapolate')
             self.line.set_data(self.x_dense, f(self.x_dense))
+            self.inflow_edited = True
             self._inflow_summary()
         self.dragger = _DraggablePoints(ax, self.x_ctrl, self.y_ctrl, refresh)
         lay.addWidget(self.canvas, 1)
         form = W.QFormLayout()
         self.hr = W.QDoubleSpinBox(); self.hr.setRange(20, 250); self.hr.setValue(70); self.hr.setDecimals(1)
-        self.hr.valueChanged.connect(lambda *_: self._inflow_summary())
+        self.hr.valueChanged.connect(lambda *_: (setattr(self, 'inflow_edited', True), self._inflow_summary()))
         form.addRow('heart rate [bpm]', self.hr)
         self.peak = W.QDoubleSpinBox(); self.peak.setRange(1, 5000); self.peak.setValue(400); self.peak.setDecimals(0)
         self.peak.setToolTip('sets the vertical range of the editor: -25% .. +125% of this value')
@@ -512,7 +614,7 @@ class MainWindow:
                              'svOneDSolver is implicit, so smaller counts still run; the recommendation is about '
                              'accuracy, and the 1D run time grows with it.')
         self.dt_label = W.QLabel(''); self.dt_label.setStyleSheet('color: gray')
-        self.npts.valueChanged.connect(lambda *_: self._inflow_summary())
+        self.npts.valueChanged.connect(lambda *_: (setattr(self, 'inflow_edited', True), self._inflow_summary()))
         r = W.QHBoxLayout(); r.addWidget(self.npts); r.addWidget(self.dt_label); r.addStretch()
         form.addRow('time samples per cycle', r)
         lay.addLayout(form)
@@ -574,6 +676,8 @@ class MainWindow:
         return t, f(t)
 
     def _set_waveform(self, t, q):
+        # the editor holds 20 control knots: showing a measured waveform is lossy, so
+        # loading one must not count as an edit (save_inflow keeps the file untouched)
         T = t[-1] - t[0]
         self.hr.setValue(round(60.0 / T, 1))
         self.y_ctrl[:] = np.interp(self.x_ctrl, (t - t[0]) / T, q)
@@ -581,6 +685,7 @@ class MainWindow:
         self.dragger.pts.set_offsets(np.c_[self.x_ctrl, self.y_ctrl])
         self.dragger.update()
         self.canvas.draw_idle()
+        self.inflow_edited = False
 
     def _inflow_target(self) -> Path:
         i = self.case.config.inflow
@@ -602,13 +707,28 @@ class MainWindow:
             from ..io.inflow import read_inflow
             t, q = read_inflow(f)
             self._set_waveform(t, q)
+            self.inflow_loaded_from = Path(f)
+            self.inflow_info.setText('showing %s (%d samples, drawn with %d control points)'
+                                     % (f, len(t), len(self.x_ctrl)))
 
     def save_inflow(self):
         from ..io.inflow import write_inflow
         if self.case is None:
             return self.error('create or open a case first')
-        t, q = self.waveform()
         f = self._inflow_target()
+        src = getattr(self, 'inflow_loaded_from', None)
+        if not getattr(self, 'inflow_edited', False) and (f.exists() or src is not None):
+            # nothing was drawn: keep the measured samples instead of the 20-knot approximation
+            if src is not None and Path(src).resolve() != f.resolve():
+                f.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(str(src), str(f))
+                self.inflow_info.setText('copied %s to %s (unchanged: the editor only draws it)' % (src, f))
+            else:
+                self.inflow_info.setText('%s is unchanged (drag a point to edit it)' % f)
+            self._inflow_summary()
+            self.refresh_status()
+            return self.status('inflow unchanged')
+        t, q = self.waveform()
         f.parent.mkdir(parents=True, exist_ok=True)
         write_inflow(t, q, f)
         self._inflow_summary()
@@ -694,10 +814,13 @@ class MainWindow:
     def _outlet_rows(self):
         return [r for r in range(len(self.caps)) if r != self.inlet_row]
 
-    def _anchor_items(self, current):
+    def _anchor_items(self, current, keep_index=None):
         items = ['inlet'] + [self.names[r] for r in self._outlet_rows()]
         self.anchor.blockSignals(True); self.anchor.clear(); self.anchor.addItems(items)
-        self.anchor.setCurrentIndex(items.index(current) if current in items else 0)
+        if keep_index is not None and 0 <= keep_index < len(items):
+            self.anchor.setCurrentIndex(keep_index)     # a rename keeps the same cap selected
+        else:
+            self.anchor.setCurrentIndex(items.index(current) if current in items else 0)
         self.anchor.blockSignals(False)
 
     def _select(self, row):
@@ -707,9 +830,11 @@ class MainWindow:
         self.viewer.highlight(self.caps, self.inlet_row, row)
 
     def _picked(self, mesh):
+        if not self.caps:
+            return
         c0 = np.asarray(mesh.center)
         row = int(np.argmin([np.linalg.norm(c.centroid - c0) for c in self.caps]))
-        self.tabs.setCurrentIndex(2)
+        self.tabs.setCurrentIndex(self.TAB_TARGETS)
         self.table.setCurrentCell(row, 0)
         self._select(row)
 
@@ -725,8 +850,9 @@ class MainWindow:
         self._splits_changed()
 
     def _names_changed(self, *_):
+        keep = self.anchor.currentIndex()
         self.names = [e.text().strip() for e in self.name_edits]
-        self._anchor_items(self.anchor.currentText())
+        self._anchor_items(self.anchor.currentText(), keep_index=keep)
         self.viewer.labels(self.caps, self.names, self.inlet_row)
         if self.viewer.plotter is not None:
             self.viewer.plotter.render()
@@ -869,7 +995,7 @@ class MainWindow:
         i = STAGES.index(stage)
         self.stage_table.item(i, 1).setText({'start': 'running…', 'done': 'done', 'fresh': 'fresh', 'skipped': 'skipped'}[event])
 
-    def start_run(self, from_stage, force):
+    def start_run(self, from_stage, force, until=None, on_done=None):
         if self.case is None:
             return self.error('create or open a case first')
         if self.worker is not None:
@@ -878,18 +1004,19 @@ class MainWindow:
         self.log.clear()
         self.run_btn.setEnabled(False)
         self.force_btn.setEnabled(False)
-        self.tabs.setCurrentIndex(3)
+        self.tabs.setCurrentIndex(self.TAB_RUN)
         em = _RunEmitter.make()
         em.line.connect(self.log.appendPlainText)
         em.stage.connect(self._stage_event)
         em.done.connect(self._run_done)
         self._emitter = em
+        self._on_run_done = on_done
         case_dir = self.case.dir
 
         class Worker(QtCore.QThread):
             def run(w):
                 try:
-                    run_case_blocking(case_dir, from_stage, force, em.line.emit, em.stage.emit)
+                    run_case_blocking(case_dir, from_stage, force, em.line.emit, em.stage.emit, until=until)
                     em.done.emit(True, '')
                 except Exception:
                     em.done.emit(False, traceback.format_exc())
@@ -908,13 +1035,20 @@ class MainWindow:
         self.run_btn.setEnabled(True)
         self.force_btn.setEnabled(True)
         self.refresh_status()
-        if ok:
-            self.status('run finished')
-            self._fill_results()
-            self.tabs.setCurrentIndex(4)
-        else:
+        cb = getattr(self, '_on_run_done', None)
+        self._on_run_done = None
+        if not ok:
             self.log.appendPlainText(err)
             self.error('the run failed; see the log')
+            if cb:
+                cb(False)
+            return
+        if cb:
+            cb(True)
+            return
+        self.status('run finished')
+        self._fill_results()
+        self.tabs.setCurrentIndex(self.TAB_RESULTS)
 
     # ------------------------------------------------------------ 5 results
     def _build_results_tab(self):
@@ -1037,7 +1171,7 @@ class MainWindow:
         self.win.show()
 
 
-def run_app(case_dir=None, start_tab: int = 0) -> int:
+def run_app(case_dir=None, start_tab: int = MainWindow.TAB_MODEL) -> int:
     _require_qt()
     from qtpy import QtWidgets
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)

@@ -22,6 +22,15 @@ def set_plain(flag: bool) -> None:
     PLAIN = bool(flag)
 
 
+INTERACTIVE = True
+
+
+def set_interactive(flag: bool) -> None:
+    """False when no one can answer a dialog (GUI worker thread, CI): stages must not block."""
+    global INTERACTIVE
+    INTERACTIVE = bool(flag)
+
+
 def _rich():
     return _rich_console if (_rich_console is not None and not PLAIN) else None
 

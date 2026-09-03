@@ -103,10 +103,11 @@ def cmd_init(args):
 
 def cmd_run(args):
     from .case import Case, StageError
+    from .config import ConfigError
     try:
         case = Case(args.dir)
         ran = case.run(from_stage=getattr(args, 'from'), until=args.until, force=args.force)
-    except StageError as e:
+    except (StageError, ConfigError) as e:
         console.error(str(e))
         return 1
     console.section("done")

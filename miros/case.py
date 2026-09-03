@@ -139,7 +139,14 @@ class Case:
             console.section("%s  (%s)" % (st.name, 'forced' if (force or i_from is not None) else reason))
             notify(st.name, 'start')
             t0 = time.time()
-            outputs = st.run(self)
+            try:
+                outputs = st.run(self)
+            except Exception as e:                       # noqa: BLE001
+                if not st.optional:
+                    raise
+                console.warn("%s failed (%s); continuing without it" % (st.name, e))
+                notify(st.name, 'skipped')
+                continue
             self.manifest.record(st.name, inputs, [str(o) for o in outputs], extra={'seconds': round(time.time() - t0, 1)})
             console.ok("%s done in %.1f s" % (st.name, time.time() - t0))
             notify(st.name, 'done')

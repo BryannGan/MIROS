@@ -144,7 +144,14 @@ def build_rom_model(surface, out_dir, inflow, inlet: Optional[str] = None,
     # the ROM reader requires the file to be called rcrt.dat next to the outputs
     rcrt_path = out_dir / 'rcrt.dat'
     if rcrt is None:
-        if not rcrt_path.exists():        # never clobber tuned or user-provided values
+        stale = False
+        if rcrt_path.exists():            # keep tuned or user values, unless they name other outlets
+            try:
+                from .io.rcrt import read_rcrt
+                stale = list(read_rcrt(rcrt_path)) != list(tree.outlet_names)
+            except Exception:             # noqa: BLE001 - unreadable is stale
+                stale = True
+        if stale or not rcrt_path.exists():
             write_default_rcrt(tree.outlet_names, rcrt_path)
             log("Wrote default rcrt.dat (placeholder values) for %d outlets" % len(tree.outlet_names))
     elif Path(rcrt).resolve() != rcrt_path.resolve():

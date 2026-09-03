@@ -54,7 +54,7 @@ def find_model_folder(name_or_path: str) -> Optional[Path]:
     folder containing it).
     """
     p = Path(name_or_path).expanduser()
-    if p.exists():
+    if name_or_path not in MODELS and p.exists():
         if (p / 'plans.json').exists() or (p / 'dataset.json').exists():
             return p
         hits = sorted(p.rglob(TRAINER))

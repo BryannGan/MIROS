@@ -39,6 +39,9 @@ def run(case):
     if f.exists():
         t, q = IO.read_inflow(f)
         console.info("inflow from %s" % f)
+    elif not console.INTERACTIVE:
+        raise FileNotFoundError(
+            "no inflow file at %s. Draw one on the Inflow step (or with `miros inflow edit`) before running." % f)
     else:
         from ..ui.waveform_editor import edit_waveform
         console.info("no inflow file yet; opening the waveform editor (close the window when done)")

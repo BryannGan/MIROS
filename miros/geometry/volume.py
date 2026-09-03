@@ -49,9 +49,10 @@ def volume_mesh(surface: vtk.vtkPolyData, edge_size: Optional[float] = None,
     tet = tetgen.TetGen(closed)
     tet.tetrahedralize(switches='pq%.2fa%.6fYQ' % (quality_ratio, max_volume))
     grid = tet.grid
-    grid.point_data['GlobalNodeID'] = np.arange(grid.n_points, dtype=np.int32)
-    exterior = grid.extract_surface()
-    exterior.point_data['GlobalNodeID'] = np.arange(exterior.n_points, dtype=np.int32)
+    # 1-based volume node ids, as SimVascular writes them: the result projection
+    # reads GlobalNodeID - 1 as an index into the volume mesh
+    grid.point_data['GlobalNodeID'] = np.arange(1, grid.n_points + 1, dtype=np.int32)
+    exterior = grid.extract_surface(algorithm='dataset_surface')   # carries the volume's GlobalNodeID; never renumber it
     return grid, exterior
 
 

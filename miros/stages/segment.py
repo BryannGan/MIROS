@@ -68,6 +68,9 @@ def run(case):
     image = case.resolve(sg.image)
     if not image.exists():
         raise ConfigError("segmentation.image not found: %s" % image)
+    if not sg.seeds:
+        raise ConfigError("segmentation.seeds is empty: place a seed on the Segment step of `miros gui`, "
+                          "or add {point, direction, radius} entries to %s" % case.yaml)
     folder = _model_folder(case)
     model_units = MODELS[sg.model]['unit'] if sg.model in MODELS else sg.units
     dataset = MODELS[sg.model]['dataset'] if sg.model in MODELS else folder.parent.name

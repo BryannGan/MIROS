@@ -132,10 +132,16 @@ model:
 ```
 
 `miros run` then adds a `segment` stage in front of everything else: SeqSeg traces the vessel tree
-from the seeds, MIROS takes its smoothed surface and tracked centerline, proposes a cut plane a
-few radii inside each vessel end (`work/outlets_proposed.json`), clips the surface open there, and
-continues as usual. Put your own planes under `model.outlets` to override the proposals. The
-flow splits can stay empty until the caps exist; `miros setup` fills them in.
+from the seeds, MIROS takes its smoothed surface, finds the vessel ends of the closed surface,
+proposes a cut plane a few radii inside each end (`work/outlets_proposed.json`), clips the surface
+open there, and continues as usual. Put your own planes under `model.outlets` to override the
+proposals. The flow splits can stay empty until the caps exist; `miros setup` fills them in.
+
+In the window (`miros gui`) this is the **0 Segment** step: browse to the image (it is shown as
+three slices you can move with sliders), pick and download the model, create the case, then place
+each seed with two clicks on the slices — the start point and a point a little further along the
+vessel — and press *Segment and open outlets*. The window continues on the Model step with the
+detected caps.
 
 The pretrained weights are published by the SeqSeg authors on Zenodo (CC-BY-4.0):
 [aorta/femoral CT+MR](https://doi.org/10.5281/zenodo.15020477),
@@ -241,7 +247,7 @@ outlet (`pressure_mmHg.at: cap_2`), use a smoother waveform, or accept the value
 | `miros init DIR [--surface S] [--inflow F] [--units mm] [--inlet NAME]` | creates `DIR/case.yaml` with the detected caps |
 | `miros run DIR [--from STAGE] [--until STAGE] [--force]` | runs stale stages; `--from` re-runs from a stage onward |
 | `miros status DIR` | fresh / stale / never per stage, with the reason |
-| `miros gui [DIR]` | the whole workflow in one window: model, inflow, targets, run, results (needs `miros[gui]`) |
+| `miros gui [DIR]` | the whole workflow in one window: segment (from an image), model, inflow, targets, run, results (needs `miros[gui]`) |
 | `miros setup DIR` | the same window opened on the Targets step |
 | `miros show caps DIR` | read-only 3D view of the surface with labelled caps |
 | `miros inflow edit DIR` | draw the inflow waveform; saved to `inflow.file` and picked up by the next run |

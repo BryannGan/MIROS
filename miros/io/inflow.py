@@ -18,7 +18,7 @@ def read_inflow(path) -> Tuple[np.ndarray, np.ndarray]:
 def write_inflow(time: np.ndarray, flow: np.ndarray, path) -> None:
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         for t, q in zip(time, flow):
-            f.write('%.6f %.6f\n' % (t, q))
+            f.write('%.9f %.6f\n' % (t, q))
 
 
 def cycle_duration(path) -> float:
@@ -28,7 +28,7 @@ def cycle_duration(path) -> float:
 
 def time_step(path) -> float:
     t, _ = read_inflow(path)
-    return float(np.diff(t)[0])
+    return float((t[-1] - t[0]) / (len(t) - 1))     # not diff()[0]: rounding there drifts over a cycle
 
 
 def num_time_steps(path, cycles: int) -> int:

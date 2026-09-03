@@ -60,9 +60,24 @@ def test_segmentation_config_roundtrip_and_validation(tmp_path):
     cfg = load_config(p)
     assert cfg.segmentation.image == 'input/scan.nii.gz' and cfg.model.surface is None
     assert cfg.segmentation.seeds[0].radius == 1.1 and cfg.segmentation.seeds[0].direction == [1.0, 2.0, 4.0]
-    write_template(tmp_path / 'bad.yaml', surface=None, image='input/scan.nii.gz')      # image but no seeds
-    with pytest.raises(ConfigError, match='seeds'):
-        load_config(tmp_path / 'bad.yaml')
+    # a case created from an image has no seeds yet: that loads, and the stage says what is missing
+    seedless = tmp_path / 'bad.yaml'
+    write_template(seedless, surface=None, image='input/scan.nii.gz')
+    assert load_config(seedless).segmentation.seeds == []
     write_template(tmp_path / 'none.yaml', surface=None)                                # neither
     with pytest.raises(ConfigError, match='model.surface or segmentation.image'):
         load_config(tmp_path / 'none.yaml')
+
+
+def test_segment_stage_refuses_without_seeds(tmp_path):
+    """A case created from an image loads without seeds; the stage is what asks for them."""
+    from miros.case import Case
+    from miros.stages import segment
+    (tmp_path / 'input').mkdir()
+    img = tmp_path / 'input' / 'scan.nii.gz'
+    img.write_bytes(b'not a real volume')
+    write_template(tmp_path / 'case.yaml', surface=None, image='input/scan.nii.gz')
+    case = Case(tmp_path)
+    assert segment.enabled(case)
+    with pytest.raises(ConfigError, match='seeds'):
+        segment.run(case)

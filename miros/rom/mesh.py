@@ -395,7 +395,7 @@ class Mesh(object):
                 if params.seg_size_adaptive:
                     # adaptive mesh based on area change
                     import pwlf
-                    sample_1d = pwlf.PiecewiseLinFit(path_1d, area).fitfast(num_seg, pop=3)
+                    sample_1d = pwlf.PiecewiseLinFit(path_1d, area, seed=0).fitfast(num_seg, pop=3)   # MIROS: reproducible runs
                 else:
                     # uniform sampling along centerline
                     sample_1d = np.linspace(0, 1, num_seg + 1)

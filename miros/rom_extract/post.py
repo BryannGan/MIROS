@@ -196,7 +196,8 @@ class Post(object):
 
         # all branch ids in centerline
         ids_cent = np.unique(arrays_cent['BranchId']).tolist()
-        ids_cent.remove(-1)
+        if -1 in ids_cent:                       # MIROS: a single-vessel model has no blanked points
+            ids_cent.remove(-1)
 
         # loop all result fields
         for f in self.params.data_names:

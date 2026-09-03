@@ -6,10 +6,12 @@ from ..ui import console
 
 
 def enabled(case):
-    return bool(case.config.outputs.volume_projection)
+    return bool(case.config.outputs.volume_projection) and bool(case.config.simulation.run_1d)
 
 
 def disabled_reason(case):
+    if not case.config.simulation.run_1d:
+        return 'simulation.run_1d is false (the volume mesh only carries 1D results)'
     return 'outputs.volume_projection is false'
 
 

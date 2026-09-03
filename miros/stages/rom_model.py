@@ -4,11 +4,17 @@ from ..rom_model import Physics, RomSettings, build_rom_model
 from ..ui import console
 
 
+def _solver_name(name: str) -> str:
+    """OneDSolver's MODEL card is one whitespace-free token."""
+    clean = ''.join(c if (c.isalnum() or c in '-_.') else '_' for c in str(name)).strip('_')
+    return clean or 'model'
+
+
 def settings(case) -> RomSettings:
     s = case.config.simulation
     mat = s.material
     return RomSettings(cycles=s.cycles, seg_min_num=s.seg_min_num, element_size=s.element_size,
-                       save_data_freq=s.save_data_freq, model_name=case.config.name,
+                       save_data_freq=s.save_data_freq, model_name=_solver_name(case.config.name),
                        physics=Physics(density=s.density, viscosity=s.viscosity,
                                        olufsen_k1=mat.olufsen_k1, olufsen_k2=mat.olufsen_k2,
                                        olufsen_k3=mat.olufsen_k3, olufsen_exponent=mat.olufsen_exponent,
