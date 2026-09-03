@@ -14,11 +14,23 @@ A. Analytic initialization (no solves). With mean inflow Q and target mean
 
 B. Fixed-point loop. Run the 0D model, measure achieved flow fractions q_i
    and the pressure waveform at the target location, then update
-   multiplicatively (damped): R_i <- R_i (q_i/s_i)^a, all R scaled by
-   (P_target/P)^a; pulse pressure ratio rho = PP/PP_target moves f by
-   rho^(-a/2) and C by rho^(a/2), C being kept within a physiological range
-   so f takes over when C saturates. The problem is close to linear in
-   these variables and converges in a handful of solves.
+   multiplicatively (damped, exponent a):
+
+     splits   R_i <- R_i (q_i / s_i)^a
+     level    all R scaled by ((sys_t + dia_t) / (sys + dia))^a, or by
+              (mean_t / mean)^a when a mean target is given — never by an
+              assumed mean, because the mean's position between systolic
+              and diastolic depends on the waveform shape
+     pulse    f <- f (PP / PP_t)^(-a) (proximal resistance is the direct
+              pulse knob); when f reaches a bound, C takes over
+     shape    with a mean target, C <- C (s / s_t)^a where
+              s = (mean - dia) / PP: a slower diastolic decay (larger
+              tau = Rd C) keeps the diastolic value closer to the mean,
+              i.e. lowers s
+
+   The problem is close to linear in these variables and converges in a
+   handful of solves; the loop returns its best iterate and says when a
+   pulse-pressure target is out of reach.
 """
 import time
 from dataclasses import dataclass, field
@@ -166,7 +178,7 @@ def tune(cfg: dict, outlet_names: Sequence[str], targets: Targets, t: np.ndarray
         log("  iteration %2d: worst %5.1f%% | P %5.1f/%5.1f mean %5.1f | f %.3f C %.2e | splits %s" % (
             it, worst, pressure['systolic'], pressure['diastolic'], pressure['mean'], f, C,
             ' '.join('%s=%.1f' % (k, 100 * v) for k, v in fractions.items())))
-        if best is None or worst < best[0] - 0.5:
+        if best is None or worst < best[0] - 0.3:
             best = (worst, rcr, fractions, pressure, errors, (dict(R), f, C))
             since_improvement = 0
         else:
@@ -174,20 +186,30 @@ def tune(cfg: dict, outlet_names: Sequence[str], targets: Targets, t: np.ndarray
         if worst <= tolerance_pct:
             converged, stop_reason = True, 'converged'
             break
-        if since_improvement >= 3:
+        if since_improvement >= 4:
             stop_reason = 'stagnated'
             break
         prev = (dict(R), f, C)
+        sys_p, dia_p, mean_p = pressure['systolic'], pressure['diastolic'], pressure['mean']
         # flow splits and pressure level -> resistances
-        level = (targets.mean_target / max(pressure['mean'], 1e-6)) ** alpha
+        if targets.mean is not None:
+            level = (targets.mean / max(mean_p, 1e-6)) ** alpha
+        else:
+            level = ((targets.systolic + targets.diastolic) / max(sys_p + dia_p, 1e-6)) ** alpha
         R = {cap: float(np.clip(R[cap] * (fractions[cap] / split[cap]) ** alpha * level, 1.0, 1e8)) for cap in R}
-        # pulse pressure -> proximal fraction and compliance
-        pp = pressure['systolic'] - pressure['diastolic']
+        # pulse pressure -> proximal fraction; compliance takes over at the bounds of f
+        pp = sys_p - dia_p
         rho = pp / targets.pulse if pp > 0 else 1.0
-        C_new = float(np.clip(C * rho ** (0.5 * alpha), C_MIN, C_MAX))
-        f_exp = -alpha if C_new in (C_MIN, C_MAX) else -0.5 * alpha       # C saturated: f does all the work
-        f = float(np.clip(f * rho ** f_exp, F_MIN, F_MAX))
-        C = C_new
+        f_new = float(np.clip(f * rho ** (-alpha), F_MIN, F_MAX))
+        if f_new == f and f in (F_MIN, F_MAX):
+            C = float(np.clip(C * rho ** alpha, C_MIN, C_MAX))
+        f = f_new
+        # waveform shape (only with a mean target) -> compliance through the diastolic time constant
+        if targets.mean is not None and pp > 0:
+            s = (mean_p - dia_p) / pp
+            s_t = (targets.mean - targets.diastolic) / targets.pulse
+            if s > 0:
+                C = float(np.clip(C * (s / s_t) ** alpha, C_MIN, C_MAX))
         rcr = build_rcr(R, f, C, split)
 
     if best is not None and not converged:
