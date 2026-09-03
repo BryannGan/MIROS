@@ -271,7 +271,20 @@ class MainWindow:
         self.selected = None
         self.worker = None
 
-        self.win = QtWidgets.QMainWindow()
+        owner = self
+
+        class _Main(QtWidgets.QMainWindow):
+            def closeEvent(self, ev):                       # never destroy a running worker thread
+                if owner.worker is not None and owner.worker.isRunning():
+                    r = QtWidgets.QMessageBox.question(self, 'MIROS', 'A run is in progress. Wait for it to finish?')
+                    if r == QtWidgets.QMessageBox.Yes:
+                        owner.worker.wait()
+                    else:
+                        ev.ignore()
+                        return
+                ev.accept()
+
+        self.win = _Main()
         self.win.setWindowTitle('MIROS')
         split = QtWidgets.QSplitter()
         self.win.setCentralWidget(split)
@@ -300,6 +313,9 @@ class MainWindow:
     def _enable_tabs(self, loaded: bool):
         for i in range(1, 5):
             self.tabs.setTabEnabled(i, loaded)
+        if hasattr(self, 'model_next'):
+            self.model_next.setEnabled(loaded)
+            self.model_next_hint.setText('' if loaded else 'Create a case from the surface, or open an existing one, to continue.')
 
     def status(self, msg: str):
         self.win.statusBar().showMessage(msg, 8000)
@@ -349,7 +365,11 @@ class MainWindow:
         self.model_info = W.QLabel(''); self.model_info.setWordWrap(True)
         lay.addWidget(self.model_info)
         lay.addStretch()
-        self._next_button(lay)
+        self.model_next_hint = W.QLabel(''); self.model_next_hint.setStyleSheet('color: #9a6700')
+        lay.addWidget(self.model_next_hint)
+        self.model_next = self._next_button(lay)
+        self.model_next.setEnabled(False)
+        self.model_next_hint.setText('Create a case from the surface, or open an existing one, to continue.')
         self.tabs.addTab(page, '1  Model')
 
     def _browse_surface(self):
@@ -789,11 +809,13 @@ class MainWindow:
             self.stage_table.setItem(i, 2, W.QTableWidgetItem(''))
         lay.addWidget(self.stage_table)
         opts = W.QHBoxLayout()
-        self.run_1d = W.QCheckBox('1D simulation (OneDSolver)'); self.run_1d.setChecked(True)
-        self.run_1d.toggled.connect(lambda v: self._set_option('simulation.run_1d', bool(v)))
-        self.vol = W.QCheckBox('3D projection (volume mesh)')
+        self.sim_0d_only = W.QRadioButton('0D simulation only')
+        self.sim_0d_1d = W.QRadioButton('0D and 1D simulation'); self.sim_0d_1d.setChecked(True)
+        grp = W.QButtonGroup(page); grp.addButton(self.sim_0d_only); grp.addButton(self.sim_0d_1d)
+        self.sim_0d_1d.toggled.connect(self._sim_choice_changed)
+        self.vol = W.QCheckBox('also project 1D results onto a 3D lumen mesh')
         self.vol.toggled.connect(lambda v: self._set_option('outputs.volume_projection', bool(v)))
-        opts.addWidget(self.run_1d); opts.addWidget(self.vol); opts.addStretch()
+        opts.addWidget(self.sim_0d_only); opts.addWidget(self.sim_0d_1d); opts.addSpacing(16); opts.addWidget(self.vol); opts.addStretch()
         lay.addLayout(opts)
         row = W.QHBoxLayout()
         self.run_btn = W.QPushButton('▶ Run'); self.run_btn.clicked.connect(lambda: self.start_run(None, False))
@@ -807,6 +829,10 @@ class MainWindow:
         self.log.setMaximumBlockCount(5000)
         lay.addWidget(self.log, 1)
         self.tabs.addTab(page, '4  Run')
+
+    def _sim_choice_changed(self, one_d_checked):
+        self.vol.setEnabled(bool(one_d_checked))
+        self._set_option('simulation.run_1d', bool(one_d_checked))
 
     def _set_option(self, key, value):
         from ..config_edit import set_values
@@ -829,8 +855,13 @@ class MainWindow:
         except Exception as e:
             return self.error(str(e))
         s = self.case.config.simulation
-        self.run_1d.blockSignals(True); self.run_1d.setChecked(bool(s.run_1d)); self.run_1d.blockSignals(False)
+        for b in (self.sim_0d_only, self.sim_0d_1d):
+            b.blockSignals(True)
+        (self.sim_0d_1d if s.run_1d else self.sim_0d_only).setChecked(True)
+        for b in (self.sim_0d_only, self.sim_0d_1d):
+            b.blockSignals(False)
         self.vol.blockSignals(True); self.vol.setChecked(bool(self.case.config.outputs.volume_projection)); self.vol.blockSignals(False)
+        self.vol.setEnabled(bool(s.run_1d))
         for i, (name, state, detail) in enumerate(self.case.status()):
             self.stage_table.item(i, 1).setText(state)
             self.stage_table.item(i, 2).setText(str(detail)[:90])
@@ -863,11 +894,18 @@ class MainWindow:
                     em.done.emit(True, '')
                 except Exception:
                     em.done.emit(False, traceback.format_exc())
-        self.worker = Worker()
+        self.worker = Worker(self.win)          # parented to the window; released only once Qt says it finished
+        self.worker.finished.connect(self._worker_finished)
         self.worker.start()
 
-    def _run_done(self, ok, err):
+    def _worker_finished(self):
+        w = self.worker
         self.worker = None
+        if w is not None:
+            w.deleteLater()
+
+    def _run_done(self, ok, err):
+        # emitted from inside the thread: the QThread object must stay alive here (see _worker_finished)
         self.run_btn.setEnabled(True)
         self.force_btn.setEnabled(True)
         self.refresh_status()
