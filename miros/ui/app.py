@@ -114,32 +114,49 @@ class Viewer:
 
     # ---- image slices and seeds (Segment step) ----------------------------
     def show_image(self, grid):
-        """Three orthogonal slices of an ImageData with sliders to move them."""
+        """
+        Three orthogonal slices of a volume, with a slider each.
+
+        The slices are vtkImageActors: the mapper uploads the one plane it
+        shows, so moving a slider is a display-extent change (about a
+        millisecond) instead of cutting a polygonal slice out of the volume
+        (about a second on a 512x64x512 scan).
+        """
         if self.plotter is None:
             return
-        import pyvista as pv
+        import vtk
         self.clear()
         self._image = grid
+        dims = np.array(grid.dimensions, dtype=int) - 1
+        origin, spacing = np.array(grid.origin, float), np.array(grid.spacing, float)
         b = grid.bounds
-        lo, hi = np.array(b[0::2]), np.array(b[1::2])
-        self._slice_pos = 0.5 * (lo + hi)
-        vals = grid.point_data['intensity']
-        clim = (float(np.percentile(vals, 1)), float(np.percentile(vals, 99)))
-        self._slice_clim = clim
+        lo, hi = np.array(b[0::2], float), np.array(b[1::2], float)
+        vals = np.asarray(grid.point_data['intensity'])
+        c0, c1 = (float(np.percentile(vals, 1)), float(np.percentile(vals, 99)))
 
-        def draw():
-            x, y, z = self._slice_pos
-            self.plotter.add_mesh(grid.slice(normal='x', origin=(x, y, z)), name='slice_x', cmap='gray', clim=clim, show_scalar_bar=False)
-            self.plotter.add_mesh(grid.slice(normal='y', origin=(x, y, z)), name='slice_y', cmap='gray', clim=clim, show_scalar_bar=False)
-            self.plotter.add_mesh(grid.slice(normal='z', origin=(x, y, z)), name='slice_z', cmap='gray', clim=clim, show_scalar_bar=False)
-            self.plotter.render()
-        self._draw_slices = draw
-        draw()
-        for i, (axis, y0) in enumerate((('x', 0.10), ('y', 0.16), ('z', 0.22))):
-            def cb(v, i=i):
-                self._slice_pos[i] = v
-                draw()
-            self.plotter.add_slider_widget(cb, rng=(lo[i], hi[i]), value=self._slice_pos[i], title=axis,
+        self._slice_actors = []
+        for axis in range(3):
+            a = vtk.vtkImageActor()
+            a.GetMapper().SetInputData(grid)
+            a.GetProperty().SetColorWindow(max(c1 - c0, 1e-6))
+            a.GetProperty().SetColorLevel(0.5 * (c0 + c1))
+            a.GetProperty().SetInterpolationTypeToLinear()
+            self.plotter.add_actor(a, name='slice_%d' % axis)
+            self._slice_actors.append(a)
+
+        def set_plane(axis, world):
+            k = int(round((world - origin[axis]) / max(spacing[axis], 1e-12)))
+            k = int(np.clip(k, 0, dims[axis]))
+            e = [0, dims[0], 0, dims[1], 0, dims[2]]
+            e[2 * axis] = e[2 * axis + 1] = k
+            self._slice_actors[axis].SetDisplayExtent(*e)
+
+        self._set_plane = set_plane
+        for axis in range(3):
+            set_plane(axis, 0.5 * (lo[axis] + hi[axis]))
+        for axis, (name, y0) in enumerate((('x', 0.10), ('y', 0.16), ('z', 0.22))):
+            self.plotter.add_slider_widget(lambda v, a=axis: (set_plane(a, v), self.plotter.render()),
+                                           rng=(lo[axis], hi[axis]), value=0.5 * (lo[axis] + hi[axis]), title=name,
                                            pointa=(0.02, y0), pointb=(0.22, y0), style='modern', title_height=0.015,
                                            slider_width=0.015, tube_width=0.004, fmt='%.1f')
         self.plotter.add_axes()

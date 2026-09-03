@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from ..config import ConfigError
 from ..geometry.caps import read_polydata
 from ..geometry.outlets import propose_from_closed_surface, propose_outlet_planes
@@ -58,9 +60,85 @@ def _scale(image_units: str, model_units: str) -> float:
     return {('mm', 'cm'): 0.1, ('cm', 'mm'): 10.0}.get((image_units, model_units), 1.0)
 
 
+def _seqseg_configs():
+    """{name: path} of the tracing configs shipped with the installed SeqSeg."""
+    try:
+        import seqseg.config as C
+    except ImportError:
+        return {}
+    return {p.stem: p for d in getattr(C, '__path__', []) for p in sorted(Path(d).glob('*.yaml'))}
+
+
+def _config_name(case) -> str:
+    """
+    The SeqSeg tracing config: the one named in case.yaml, else the one that
+    suits the model. Some configs shipped upstream are incomplete (SeqSeg 2.1's
+    `global` has no ADD_RADIUS and dies mid-trace), so the choice is checked here
+    rather than an hour into a run.
+    """
+    sg = case.config.segmentation
+    name = sg.config_name or MODELS.get(sg.model, {}).get('config') or 'global_default'
+    available = _seqseg_configs()
+    if not available:
+        return name                                  # SeqSeg not importable here; let the subprocess complain
+    if name not in available:
+        raise ConfigError("segmentation.config_name %r is not a SeqSeg config; available: %s"
+                          % (name, ', '.join(sorted(available))))
+    import yaml
+    keys = {}
+    for n, path in available.items():
+        try:
+            keys[n] = set(yaml.safe_load(path.read_text(errors='replace')) or {})
+        except Exception:                                # noqa: BLE001 - unreadable config
+            keys[n] = set()
+    complete = max(keys.values(), key=len, default=set())     # the settings a full config carries
+    missing = sorted(complete - keys.get(name, set()))
+    if missing:
+        good = sorted(n for n, k in keys.items() if not (complete - k))
+        raise ConfigError("the SeqSeg config %r is missing %s, so tracing would stop part way through. "
+                          "Set segmentation.config_name to one of: %s" % (name, ', '.join(missing), ', '.join(good)))
+    return name
+
+
 def _steps_in_name(p: Path) -> int:
     m = re.search(r'_(\d+)_steps', p.name)
     return int(m.group(1)) if m else -1
+
+
+ITK_SUFFIXES = ('.nii', '.nii.gz', '.mha', '.mhd', '.nrrd', '.nhdr', '.dcm', '.hdr', '.img')
+
+
+def _image_for_seqseg(case, image: Path) -> Path:
+    """
+    SeqSeg reads what SimpleITK reads. A VTK image (.vti, .vtk) is converted
+    once into work/image.mha, keeping spacing, origin and orientation, so seed
+    coordinates picked on it still mean the same point.
+    """
+    if image.name.lower().endswith(ITK_SUFFIXES):
+        return image
+    if image.suffix.lower() not in ('.vti', '.vtk'):
+        return image
+    import pyvista as pv
+    import SimpleITK as sitk
+    grid = pv.read(str(image))
+    if not isinstance(grid, pv.ImageData):
+        raise ConfigError("segmentation.image %s is a %s, not a regular image volume"
+                          % (image.name, type(grid).__name__))
+    name = grid.point_data.active_scalars_name or (grid.point_data.keys() or [None])[0]
+    if name is None:
+        raise ConfigError("segmentation.image %s carries no point data to segment" % image.name)
+    arr = np.asarray(grid.point_data[name], dtype=np.float32).reshape(grid.dimensions[::-1])
+    img = sitk.GetImageFromArray(arr)
+    img.SetSpacing(tuple(float(s) for s in grid.spacing))
+    img.SetOrigin(tuple(float(o) for o in grid.origin))
+    d = getattr(grid, 'direction_matrix', None)
+    if d is not None:
+        img.SetDirection(tuple(float(v) for v in np.asarray(d).ravel()))
+    case.work.mkdir(parents=True, exist_ok=True)
+    target = case.work / (image.stem + '.mha')     # keep the case name SeqSeg derives from the file
+    sitk.WriteImage(img, str(target))
+    console.info('converted %s to %s for SeqSeg (%s)' % (image.name, target.name, 'x'.join(map(str, grid.dimensions))))
+    return target
 
 
 def run(case):
@@ -72,11 +150,14 @@ def run(case):
         raise ConfigError("segmentation.seeds is empty: place a seed on the Segment step of `miros gui`, "
                           "or add {point, direction, radius} entries to %s" % case.yaml)
     folder = _model_folder(case)
+    config_name = _config_name(case)
     model_units = MODELS[sg.model]['unit'] if sg.model in MODELS else sg.units
     dataset = MODELS[sg.model]['dataset'] if sg.model in MODELS else folder.parent.name
+    image = _image_for_seqseg(case, image)
     out = case.work / 'seqseg'
-    if out.exists():
-        shutil.rmtree(out)
+    for stale in [out] + sorted(case.work.glob('seqseg3d_*')) + sorted(case.work.glob('seqseg*_fullres_*')):
+        if stale.exists():                     # SeqSeg refuses to overwrite its own output tree
+            shutil.rmtree(stale, ignore_errors=True)
     out.mkdir(parents=True)
 
     # seeds.json: [[start point, direction point, radius], ...]; the case name must match the image stem
@@ -91,13 +172,13 @@ def run(case):
 
     cmd = [sys.executable, '-m', 'seqseg.seqseg', 'run', 'single',
            '--image', str(image), '--outdir', str(out), '--model-folder', str(folder),
-           '--train-dataset', dataset, '--config-name', sg.config_name,
+           '--train-dataset', dataset, '--config-name', config_name,
            '--unit', sg.units, '--scale', '%g' % _scale(sg.units, model_units),
            '--max-n-steps', str(sg.max_steps), '--max-n-branches', str(sg.max_branches),
            '--max-n-steps-per-branch', str(sg.max_steps_per_branch),
            '--seeds-json', str(seeds_json)]
-    console.info('SeqSeg: %s (%s), %d seed(s), image units %s, scale %g' % (
-        sg.model, dataset, len(seeds), sg.units, _scale(sg.units, model_units)))
+    console.info('SeqSeg: %s (%s), config %s, %d seed(s), image units %s, scale %g' % (
+        sg.model, dataset, config_name, len(seeds), sg.units, _scale(sg.units, model_units)))
     log = out / 'seqseg.log'
     with open(log, 'w', encoding='utf-8', newline='\n') as f:
         proc = subprocess.run(cmd, cwd=str(out), stdout=f, stderr=subprocess.STDOUT)

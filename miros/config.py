@@ -32,7 +32,7 @@ class SegmentationConfig:
     units: str = 'mm'                          # units of the image coordinates: cm | mm
     model: str = 'aorta_ct'                    # aorta_ct | aorta_mr | coronary_ct | path to an nnU-Net trainer folder
     seeds: List[SeedConfig] = field(default_factory=list)
-    config_name: str = 'global'
+    config_name: str = ''                      # SeqSeg tracing config; empty = the one that suits the model
     max_steps: int = 1000
     max_branches: int = 100
     max_steps_per_branch: int = 100
@@ -280,7 +280,7 @@ segmentation:                   # optional: segment the vessel from an image wit
   seeds: {seeds}
   #  - {{point: [x, y, z], direction: [x2, y2, z2], radius: 1.1}}   # world coordinates; direction = a second
   #                                                              point a little further along the vessel
-  config_name: global
+  config_name: ''               # SeqSeg tracing config; '' picks the one that suits the model
   max_steps: 1000
   max_branches: 100
   max_steps_per_branch: 100

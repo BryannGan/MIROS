@@ -96,6 +96,7 @@ def boundary_loops(surface: vtk.vtkPolyData) -> List[np.ndarray]:
     strip = vtk.vtkStripper()
     strip.SetInputConnection(edges.GetOutputPort())
     strip.JoinContiguousSegmentsOn()
+    strip.SetMaximumLength(surface.GetNumberOfPoints() or 1)   # default 1000 splits a finely meshed cap loop
     strip.Update()
     stripped = strip.GetOutput()
 

@@ -47,7 +47,7 @@ def volume_mesh(surface: vtk.vtkPolyData, edge_size: Optional[float] = None,
 
     max_volume = edge_size ** 3 / (6.0 * np.sqrt(2.0))   # regular tetrahedron of edge h
     tet = tetgen.TetGen(closed)
-    tet.tetrahedralize(switches='pq%.2fa%.6fYQ' % (quality_ratio, max_volume))
+    tet.tetrahedralize(switches='pq%.2fa%.10gYQ' % (quality_ratio, max_volume))   # %f rounds a cm³ bound to 0
     grid = tet.grid
     # 1-based volume node ids, as SimVascular writes them: the result projection
     # reads GlobalNodeID - 1 as an index into the volume mesh

@@ -71,6 +71,7 @@ class SegmentPage:
         srow.addStretch()
         self.pick_btn = QtWidgets.QPushButton('Add seed by clicking'); self.pick_btn.setCheckable(True)
         self.pick_btn.toggled.connect(self._toggle_pick)
+        self.pick_btn.setEnabled(False)
         srow.addWidget(self.pick_btn)
         lay.addLayout(srow)
         self.units.currentTextChanged.connect(lambda u: self.radius_unit.setText('[%s]' % u))
@@ -91,11 +92,21 @@ class SegmentPage:
         lay.addWidget(self.message)
         lay.addStretch()
         self._model_status()
+        self._set_seeding_enabled(False)
+
+    def _set_seeding_enabled(self, on: bool):
+        """Seeds belong to a case, so they can only be placed once one exists."""
+        for w in (self.pick_btn, self.save_btn, self.run_btn, self.radius, self.seed_table):
+            w.setEnabled(on)
+        if not on:
+            self.pick_btn.setChecked(False)
+        self.pick_hint.setText('' if on else 'Create the case from this image first, then place the seeds.')
 
     # ---- image ----------------------------------------------------------
     def _browse_image(self):
         f, _ = self.W.QFileDialog.getOpenFileName(self.main.win, 'Image volume', '',
-                                                  'Volumes (*.nii *.nii.gz *.mha *.mhd *.nrrd *.vti);;All files (*)')
+                                                  'Volumes (*.nii *.nii.gz *.mha *.mhd *.nrrd *.nhdr *.vti *.vtk);;'
+                                                  'All files (*)')
         if f:
             self.image_edit.setText(f)
             self.load_image(Path(f))
@@ -107,30 +118,42 @@ class SegmentPage:
 
     def load_image(self, path: Path):
         import pyvista as pv
-        try:
-            import SimpleITK as sitk
-        except ImportError:
-            return self.main.error('SimpleITK is needed to read images: pip install "miros[seg]"')
-        img = sitk.ReadImage(str(path))
-        arr = sitk.GetArrayFromImage(img)                       # z, y, x
-        grid = pv.ImageData(dimensions=img.GetSize(), spacing=img.GetSpacing(), origin=img.GetOrigin())
-        d = np.asarray(img.GetDirection()).reshape(3, 3)
-        if hasattr(grid, 'direction_matrix'):
-            grid.direction_matrix = d
-        grid.point_data['intensity'] = arr.ravel(order='C').astype(np.float32)
+        if path.suffix.lower() in ('.vti', '.vtk'):             # VTK images: read them directly
+            grid = pv.read(str(path))
+            if not isinstance(grid, pv.ImageData):
+                return self.main.error('%s is a %s, not an image volume' % (path.name, type(grid).__name__))
+            name = grid.point_data.active_scalars_name or (list(grid.point_data.keys()) or [None])[0]
+            if name is None:
+                return self.main.error('%s carries no point data to show' % path.name)
+            if name != 'intensity':
+                grid.point_data['intensity'] = np.asarray(grid.point_data[name], dtype=np.float32)
+            size, spacing = grid.dimensions, grid.spacing
+        else:
+            try:
+                import SimpleITK as sitk
+            except ImportError:
+                return self.main.error('SimpleITK is needed to read images: pip install "miros[seg]"')
+            img = sitk.ReadImage(str(path))
+            arr = sitk.GetArrayFromImage(img)                   # z, y, x
+            grid = pv.ImageData(dimensions=img.GetSize(), spacing=img.GetSpacing(), origin=img.GetOrigin())
+            d = np.asarray(img.GetDirection()).reshape(3, 3)
+            if hasattr(grid, 'direction_matrix'):
+                grid.direction_matrix = d
+            grid.point_data['intensity'] = arr.ravel(order='C').astype(np.float32)
+            size, spacing = img.GetSize(), img.GetSpacing()
         self.image = grid
         self.image_path = path
-        extent = max(np.asarray(img.GetSize()) * np.asarray(img.GetSpacing()))
+        extent = max(np.asarray(size) * np.asarray(spacing))
         mm = extent > 60
         self.units.setCurrentText('mm' if mm else 'cm')
         self.units_hint.setText('extent %.1f, spacing %s → looks like %s' % (
-            extent, 'x'.join('%.2f' % s for s in img.GetSpacing()), 'mm' if mm else 'cm'))
+            extent, 'x'.join('%.2f' % s for s in spacing), 'mm' if mm else 'cm'))
         self.radius.setValue(10.0 if mm else 1.0)
         if not self.case_edit.text():
             stem = path.name.split('.')[0]
             self.case_edit.setText(str(Path.home() / 'miros_cases' / stem))
         self.main.viewer.show_image(grid)
-        self.main.status('loaded %s (%s)' % (path.name, 'x'.join(str(s) for s in img.GetSize())))
+        self.main.status('loaded %s (%s)' % (path.name, 'x'.join(str(s) for s in size)))
 
     # ---- model ----------------------------------------------------------
     def _model_status(self):
@@ -199,6 +222,7 @@ class SegmentPage:
                        image=_case_relative(Path(img).resolve(), d), image_units=self.units.currentText(),
                        seg_model=self.model.currentData())
         self.main.load_case(d, show_model=False)
+        self._set_seeding_enabled(True)
         self.main.status('created %s' % y)
         self.message.setText('case created — now place the seeds and press Segment')
 
@@ -215,6 +239,7 @@ class SegmentPage:
         if i >= 0:
             self.model.setCurrentIndex(i)
         self.seeds = [dict(point=list(s.point), direction=list(s.direction), radius=float(s.radius)) for s in sg.seeds]
+        self._set_seeding_enabled(True)
         self._refresh_seed_table()
         if self.image is None or self.image_path != case.resolve(sg.image):
             try:
@@ -225,6 +250,9 @@ class SegmentPage:
 
     # ---- seeds ----------------------------------------------------------
     def _toggle_pick(self, on):
+        if on and self.main.case is None:
+            self.pick_btn.setChecked(False)
+            return self.main.error('create the case from this image first (button above), then place the seeds')
         if self.image is None:
             self.pick_btn.setChecked(False)
             return self.main.error('load an image first')

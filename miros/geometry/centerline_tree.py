@@ -133,6 +133,7 @@ class _SectionCutter:
         self.strip = vtk.vtkStripper()
         self.strip.SetInputConnection(self.cutter.GetOutputPort())
         self.strip.JoinContiguousSegmentsOn()
+        self.strip.SetMaximumLength(closed.GetNumberOfPoints() or 1)    # default 1000 splits a fine cut loop
 
     def area(self, point, normal, radius):
         n = normal / max(np.linalg.norm(normal), 1e-12)

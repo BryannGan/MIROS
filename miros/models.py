@@ -21,17 +21,17 @@ MODELS: Dict[str, dict] = {
     'aorta_ct': dict(
         description='Aorta and femoral arteries, CT (Vascular Model Repository)',
         record=15020477, file='nnUNet_results.zip', size=236318244,
-        dataset='Dataset006_SEQAORTANDFEMOCT', unit='cm', modality='CT',
+        dataset='Dataset006_SEQAORTANDFEMOCT', unit='cm', modality='CT', config='global_aorta',
         doi='10.5281/zenodo.15020477'),
     'aorta_mr': dict(
         description='Aorta and femoral arteries, MR (Vascular Model Repository)',
         record=15020477, file='nnUNet_results.zip', size=236318244,
-        dataset='Dataset005_SEQAORTANDFEMOMR', unit='cm', modality='MR',
+        dataset='Dataset005_SEQAORTANDFEMOMR', unit='cm', modality='MR', config='global_aorta',
         doi='10.5281/zenodo.15020477'),
     'coronary_ct': dict(
         description='Coronary arteries, CT angiography',
         record=19547894, file='nnUNet_results_coronary.zip', size=2793144,
-        dataset='Dataset010_SEQCOROASOCACT', unit='mm', modality='CT',
+        dataset='Dataset010_SEQCOROASOCACT', unit='mm', modality='CT', config='global_coro',
         doi='10.5281/zenodo.19547894'),
 }
 TRAINER = 'nnUNetTrainer__nnUNetPlans__3d_fullres'

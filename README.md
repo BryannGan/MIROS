@@ -122,9 +122,10 @@ miros models download aorta_ct        # or aorta_mr, coronary_ct — 225 MB / 22
 
 ```yaml
 segmentation:
-  image: input/scan.nii.gz            # .nii(.gz) / .mha / .nrrd
+  image: input/scan.nii.gz            # .nii(.gz) / .mha / .nrrd / .vti / .vtk
   units: mm                           # units of the image coordinates
   model: aorta_ct                     # aorta_ct | aorta_mr | coronary_ct | path to an nnU-Net trainer folder
+  config_name: ''                     # '' = the SeqSeg tracing config that suits the model
   seeds:
     - {point: [x, y, z], direction: [x2, y2, z2], radius: 1.1}   # where to start, which way, lumen radius
 model:
@@ -141,7 +142,9 @@ In the window (`miros gui`) this is the **0 Segment** step: browse to the image 
 three slices you can move with sliders), pick and download the model, create the case, then place
 each seed with two clicks on the slices — the start point and a point a little further along the
 vessel — and press *Segment and open outlets*. The window continues on the Model step with the
-detected caps.
+detected caps. Seeds belong to a case, so the seeding controls stay disabled until you press
+*Create case from this image*. A VTK volume (`.vti`, `.vtk`) is converted to `.mha` in `work/`
+for SeqSeg, keeping its spacing, origin and orientation.
 
 The pretrained weights are published by the SeqSeg authors on Zenodo (CC-BY-4.0):
 [aorta/femoral CT+MR](https://doi.org/10.5281/zenodo.15020477),

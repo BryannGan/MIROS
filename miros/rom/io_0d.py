@@ -53,7 +53,9 @@ def write_0d_solver_file(mesh, params, model):
     dt = params.time_step
     n_step = params.num_time_steps
     t_cycle = mesh.inflow_data[-1][0]
-    inp['simulation_parameters']['number_of_time_pts_per_cardiac_cycle'] = int(t_cycle / dt)
+    # MIROS: dt is read back from a text file, so t_cycle/dt lands just under the
+    # sample count; int() would drop a point from every cycle
+    inp['simulation_parameters']['number_of_time_pts_per_cardiac_cycle'] = max(int(round(t_cycle / dt)), 2)
     inp['simulation_parameters']['number_of_cardiac_cycles'] = int(n_step / t_cycle * dt) + 1
 
     # fluid
