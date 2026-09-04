@@ -113,6 +113,8 @@ def set_outlets(path, planes) -> None:
         m['origin'] = [round(float(v), 5) for v in p['origin']]
         m['normal'] = [round(float(v), 6) for v in p['normal']]
         m['radius'] = round(float(p['radius']), 5)
+        m['box_width'] = round(float(p.get('box_width', 1.6 * float(p['radius']))), 5)
+        m['box_length'] = round(float(p.get('box_length', 3.0 * float(p['radius']))), 5)
         m['inlet'] = bool(p.get('inlet', False))
         m['use'] = bool(p.get('use', True))
         m.fa.set_flow_style()

@@ -150,9 +150,19 @@ inlet, move a cut along its vessel or flip which side it discards. What you appr
 `model.outlets` in `case.yaml`, so the next run repeats it exactly. Editing that list by hand does
 the same thing without the window.
 
-Each cut removes only the piece of surface connected to that one vessel end, so a plane that
-happens to cross a neighbouring vessel leaves it alone. A cut that would split the model instead
-of opening an end is reported by name and skipped rather than applied.
+**A cut is a box, not a plane.** Following SimVascular's box trim, each cut is six half-spaces
+given to `vtkClipPolyData`: it starts at the cut face, reaches `box_length` along the outward
+normal and is `box_width` wide, both in centimetres and both editable per cut. Only the wall
+inside that box can go, so a cut can never take the body of the model, and of that wall only the
+piece connected to the vessel end at the cut, so a neighbouring vessel crossing the box keeps its
+wall. The box grows along the vessel until the piece it takes ends inside it. The rim is then put
+exactly on the cut plane, so the cap is flat. A cut that would take more than half the model is
+reported by name and skipped.
+
+A surface out of segmentation carries the voxel grid with it, so `model.smooth_iterations`
+(20 for an image case, 0 otherwise) runs a windowed sinc pass over the wall before the cuts, with
+`model.smooth_pass_band` for how hard: SimVascular's own values, and it moves the wall about a
+quarter of a millimetre on the example.
 
 The flow splits can stay empty until the caps exist; `miros setup` fills them in.
 

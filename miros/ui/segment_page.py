@@ -55,19 +55,30 @@ class SegmentPage:
         form.addRow('model', r3)
         self.model.currentIndexChanged.connect(lambda *_: (self._model_status(), self._fill_tracing_configs()))
         self.tracing = QtWidgets.QComboBox()
+        self.tracing.setToolTip('The tracing settings SeqSeg uses. The one that suits the chosen model is '
+                                'picked for you; press "all settings…" to see and change every one of them.')
         self.steps = QtWidgets.QSpinBox(); self.steps.setRange(10, 100000); self.steps.setValue(1000)
-        self.steps.setToolTip('Total tracing steps. Each step follows the vessel about one radius further, '
-                              'so this sets how much of the tree is segmented (and most of the run time).')
+        self.steps.setToolTip('Total tracing steps. One step walks about one vessel radius, so this is how far '
+                              'the tracing gets in all, and it sets most of the run time.')
         self.branches = QtWidgets.QSpinBox(); self.branches.setRange(1, 1000); self.branches.setValue(100)
-        self.branches.setToolTip('How many branches SeqSeg may start.')
+        self.branches.setToolTip('How many branches SeqSeg may start. Stop it wandering into every small '
+                                 'vessel by keeping this near the number of outlets you want to model.')
         self.steps_branch = QtWidgets.QSpinBox(); self.steps_branch.setRange(1, 100000); self.steps_branch.setValue(100)
-        self.steps_branch.setToolTip('How far it follows one branch before moving to the next.')
-        self.centerline_box = QtWidgets.QCheckBox('centerline the tree (outlet cuts come from it)')
+        self.steps_branch.setToolTip('How far it follows one branch before moving to the next. Low values '
+                                     'spread the effort over the tree; high values chase one vessel to its end.')
+        self.centerline_box = QtWidgets.QCheckBox('centerline the tree')
+        self.centerline_box.setToolTip('Ask SeqSeg for a centerline of the whole tree. The vessel ends then come '
+                                       'from it, which is more reliable than reading them off the surface. '
+                                       'Costs about half a minute.')
         self.centerline_box.setChecked(True)
         r5 = QtWidgets.QHBoxLayout()
-        for label, wdg in (('config', self.tracing), ('total steps', self.steps),
-                           ('branches', self.branches), ('steps per branch', self.steps_branch)):
+        for label, wdg, hint in (('config', self.tracing, ''),
+                                 ('total steps', self.steps, 'aorta root to iliacs ≈ 800;  arch only ≈ 200'),
+                                 ('branches', self.branches, 'aorta + arch vessels + renals ≈ 10'),
+                                 ('steps per branch', self.steps_branch, 'a 10 cm vessel of 1 cm radius ≈ 20')):
             r5.addWidget(QtWidgets.QLabel(label)); r5.addWidget(wdg)
+            if hint:
+                h = QtWidgets.QLabel('(%s)' % hint); h.setStyleSheet('color: gray'); r5.addWidget(h)
         self.edit_cfg = QtWidgets.QPushButton('all settings…')
         self.edit_cfg.setToolTip('Open the whole tracing config: every SeqSeg setting, saved as a copy in the case')
         self.edit_cfg.clicked.connect(self.edit_config)
@@ -83,8 +94,10 @@ class SegmentPage:
         row.addWidget(self.create_btn); row.addStretch()
         lay.addLayout(row)
 
-        lay.addWidget(QtWidgets.QLabel('<b>Seeds</b> — click a slice for the start point, click again a little further '
-                                       'along the vessel for the direction. Use the sliders in the 3D view to move the slices.'))
+        lay.addWidget(QtWidgets.QLabel('<b>Seeds</b> — click a slice for the start point, then click again a '
+                                       'centimetre or so further along the vessel to say which way to trace. '
+                                       'Put the first seed where the inflow enters, for example the aortic root. '
+                                       'Use the sliders in the 3D view to move the slices.'))
         srow = QtWidgets.QHBoxLayout()
         srow.addWidget(QtWidgets.QLabel('vessel radius at the seed'))
         self.radius = QtWidgets.QDoubleSpinBox(); self.radius.setRange(0.01, 1000); self.radius.setDecimals(2); self.radius.setValue(1.0)
@@ -92,8 +105,8 @@ class SegmentPage:
         self._units = self.units.currentText()
         self.radius_unit = QtWidgets.QLabel('[%s]' % self._units)
         srow.addWidget(self.radius_unit)
-        srow.addWidget(QtWidgets.QLabel('— seed points and this radius are in image coordinates, '
-                                        'so they follow the image units above'))
+        srow.addWidget(QtWidgets.QLabel('— in image coordinates, so it follows the image units above '
+                                        '(an adult aorta ≈ 1.5 cm, a renal artery ≈ 0.25 cm)'))
         srow.addStretch()
         self.pick_btn = QtWidgets.QPushButton('Add seed by clicking'); self.pick_btn.setCheckable(True)  # noqa: E501
         self.pick_btn.toggled.connect(self._toggle_pick)

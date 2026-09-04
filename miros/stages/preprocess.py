@@ -29,7 +29,7 @@ def outlet_planes(case):
     return []
 
 
-def inputs(case):
+def inputs(case):   # noqa: D401 - the model section covers the smoothing settings too
     d = {'surface': file_hash(source_surface(case)), 'model': value_hash(case.config.section('model'))}
     proposed = case.work / 'outlets_proposed.json'
     if case.config.segmentation.image and proposed.exists():
@@ -59,6 +59,14 @@ def run(case):
     names = m.cap_names
     planes = outlet_planes(case)
     units = case.config.segmentation.units if case.config.segmentation.image else m.units
+    if m.smooth_iterations > 0:
+        from ..geometry.smooth import smooth_surface, wall_movement
+        smoothed = smooth_surface(surf, iterations=m.smooth_iterations, pass_band=m.smooth_pass_band)
+        moved = wall_movement(surf, smoothed)
+        surf = smoothed
+        console.info("smoothed the wall: %d passes at pass band %g%s" % (
+            m.smooth_iterations, m.smooth_pass_band,
+            '' if moved is None else ', the wall moved %.3f mm on average' % (10.0 * moved)))
     if planes:
         surf = clip_with_planes(surf, planes)
         console.info("clipped %d outlet planes%s" % (len(planes), '' if m.outlets else ' (proposed by the segment stage)'))

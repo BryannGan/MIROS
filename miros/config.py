@@ -48,6 +48,8 @@ class ModelConfig:
     inlet: Optional[str] = None                # cap name; None = largest cap
     cap_names: Optional[List[str]] = None      # names for caps in decreasing-area order
     outlets: List[Dict[str, Any]] = field(default_factory=list)   # cut planes for a closed surface
+    smooth_iterations: int = 0                 # windowed sinc passes over the wall (segmentation: 20)
+    smooth_pass_band: float = 0.02             # what it keeps: smaller is smoother
     remesh: bool = False
     remesh_edge_size: Optional[float] = None   # None = estimated from the model
 
@@ -297,7 +299,10 @@ model:
   # caps are named cap_1, cap_2, ... in decreasing-area order; give your own
   # names here (same order) if you prefer, e.g. [aorta_root, desc_aorta, ...]
   cap_names: null
-  outlets: []                   # cut planes for a still-closed surface (phase 5)
+  outlets: []                   # cut planes: reviewed on the Outlets step of `miros gui`
+  smooth_iterations: {smoothing}          # windowed sinc passes over the wall; 20 for a segmented surface,
+                                # 0 for a surface you have already prepared elsewhere
+  smooth_pass_band: 0.02        # what the smoothing keeps: 0.001 very smooth, 0.1 barely anything
   remesh: false                 # usually unnecessary; centerlines work on the raw surface
   remesh_edge_size: null
 
@@ -358,6 +363,7 @@ def write_template(path, name='case', surface='input/surface.vtp', units='cm', i
         split = '\n'.join('    %s: %s' % (n, ('%.4g' % share)) for n in outlet_names)
     else:
         split = '    # cap_2: 50\n    # cap_3: 50   (filled in once the caps are known)'
+    smoothing = 20 if image else 0        # a marching-cubes surface needs it; a prepared one does not
     if seeds:
         seeds_txt = '\n' + '\n'.join('    - {point: [%s], direction: [%s], radius: %g}' % (
             ', '.join('%.4f' % v for v in s['point']), ', '.join('%.4f' % v for v in s['direction']), s['radius'])
@@ -369,5 +375,5 @@ def write_template(path, name='case', surface='input/surface.vtp', units='cm', i
                            inflow_file=inflow_file if inflow_file else 'null', flow_split=split,
                            onedsolver=onedsolver if onedsolver else 'null',
                            image=image if image else 'null', image_units=image_units, seg_model=seg_model,
-                           seeds=seeds_txt)
+                           seeds=seeds_txt, smoothing=smoothing)
     Path(path).write_text(text, encoding='utf-8', newline='\n')

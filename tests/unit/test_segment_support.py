@@ -159,25 +159,45 @@ def test_case_can_carry_its_own_tracing_config(tmp_path):
         _config_name(Case(tmp_path))
 
 
-def test_cuts_open_one_end_each_and_refuse_a_mid_vessel_plane():
-    """A cut takes the vessel end it points at: not the whole model, and not a neighbour it crosses."""
+def test_a_cut_is_a_box_that_takes_one_vessel_end():
+    """A cut removes the wall in its box and nothing else: not the model, not a vessel crossing the box."""
     from miros.geometry.caps import boundary_loops
     from miros.geometry.clip import clip_with_planes
     tube = pv.Cylinder(center=(0, 0, 0), direction=(0, 0, 1), radius=0.5, height=6,
-                       resolution=60, capping=True).triangulate().clean()
-    out = pv.wrap(clip_with_planes(tube, [dict(name='inlet', origin=[0, 0, 2.5], normal=[0, 0, 1],
-                                               radius=0.5, inlet=True)]))
+                       resolution=60, capping=True).triangulate().clean().subdivide(2)
+
+    def cut(mesh, **extra):
+        plane = dict(name='c', origin=[0, 0, 2.5], normal=[0, 0, 1], radius=0.5, inlet=True)
+        plane.update(extra)
+        return pv.wrap(clip_with_planes(mesh, [plane])), plane
+
+    out, _ = cut(tube)
     loops = boundary_loops(out)
-    assert len(loops) == 1
+    assert len(loops) == 1 and out.n_points > 0.5 * tube.n_points
     z = np.array([q[2] for q in loops[0]])
     assert z.max() - z.min() < 1e-6                      # the rim is flat, not jagged by one cell
-    # a normal pointing into the model is corrected, not obeyed
-    planes = [dict(name='inlet', origin=[0, 0, 2.5], normal=[0, 0, -1], radius=0.5, inlet=True)]
-    out2 = pv.wrap(clip_with_planes(tube, planes))
-    assert len(boundary_loops(out2)) == 1 and out2.n_points > 0.5 * tube.n_points
-    assert planes[0]['normal'] == [0.0, 0.0, 1.0]
-    # a plane across the middle is not a vessel end: it is refused, and the surface survives
-    out3 = pv.wrap(clip_with_planes(tube, [dict(name='inlet', origin=[0, 0, 2.5], normal=[0, 0, 1], radius=0.5,
-                                                inlet=True),
-                                           dict(name='cap_1', origin=[0, 0, 0], normal=[0, 0, 1], radius=0.5)]))
-    assert len(boundary_loops(out3)) == 1
+
+    # pointed the other way, the same cut trims the vessel there instead: one opening either way,
+    # and the plane records the direction the cut actually used
+    out, plane = cut(tube, normal=[0, 0, -1])
+    assert len(boundary_loops(out)) == 1
+    assert plane['normal'] in ([0.0, 0.0, -1.0], [-0.0, -0.0, 1.0])
+
+    out, _ = cut(tube, origin=[0, 0, 0])                 # part way along, a cut trims the vessel there
+    assert len(boundary_loops(out)) == 1 and 0.4 < out.n_points / tube.n_points < 0.7
+
+    # aimed at the long side of the vessel, the cut takes the short one instead of eating the model
+    out, plane = cut(tube, origin=[0, 0, -2.5], box_width=2.0)
+    assert out.n_points > 0.6 * tube.n_points and plane['normal'][2] < 0
+
+    # a vessel crossing the box keeps its wall: only the end the cut points at is opened
+    side = pv.Cylinder(center=(0.0, 0.9, 2.8), direction=(0, 1, 0), radius=0.2, height=2.0,
+                       resolution=40, capping=True).triangulate().clean()
+    both = tube.merge(side).triangulate().clean()
+    out, _ = cut(both, box_width=1.2)
+    assert out.n_points > 0.5 * both.n_points
+
+    # the box bounds the damage: nothing outside it is touched, whatever the cut is asked to do
+    out, _ = cut(tube, box_width=0.6, box_length=0.8)
+    assert abs(out.bounds[4] - tube.bounds[4]) < 1e-6      # the far end of the vessel is untouched
+    assert out.bounds[5] <= 2.5 + 1e-6                     # and nothing survives past the cut

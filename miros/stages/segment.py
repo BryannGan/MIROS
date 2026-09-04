@@ -163,8 +163,10 @@ def _inlet_plane(sg) -> dict:
     p, d = np.asarray(s.point, float), np.asarray(s.direction, float)
     n = p - d                                   # away from the vessel: the side to discard
     ln = float(np.linalg.norm(n))
-    return dict(name='inlet', origin=[float(v) for v in p], radius=float(s.radius), inlet=True,
-                normal=[float(v) for v in (n / ln if ln > 1e-12 else np.array([0.0, 0.0, 1.0]))])
+    r = float(s.radius)
+    return dict(name='inlet', origin=[float(v) for v in p], radius=r, inlet=True,
+                normal=[float(v) for v in (n / ln if ln > 1e-12 else np.array([0.0, 0.0, 1.0]))],
+                box_width=1.6 * r, box_length=4.0 * r)
 
 
 def _with_seed_inlet(planes, sg, min_separation: float = 1.5) -> list:

@@ -32,8 +32,10 @@ class OutletsPage:
         self.info = QtWidgets.QLabel('<b>Open the vessel ends</b> — every end found on the surface is listed, '
                                      'the proposed cuts ticked. Tick or untick a cut, say which one is the inlet, '
                                      'move a cut along its vessel if it sits badly, then apply. Nothing is '
-                                     'clipped before that. A cut that would split the model rather than open an '
-                                     'end is reported and left out, so try moving it toward the vessel end.')
+                                     'clipped before that. Each cut is a box: only the wall inside it goes, so a '
+                                     'cut can never take the body of the model, and a vessel crossing the box '
+                                     'keeps its wall. If the end does not fit, the box grows along the vessel '
+                                     'until it does, or the cut is reported and left out.')
         self.info.setWordWrap(True)
         lay.addWidget(self.info)
 
@@ -58,7 +60,19 @@ class OutletsPage:
         self.radius = QtWidgets.QDoubleSpinBox(); self.radius.setRange(0.01, 100); self.radius.setDecimals(3)
         self.radius.setSingleStep(0.05)
         self.radius.valueChanged.connect(self.set_radius)
-        for w in (self.move_in, self.move_out, self.flip, QtWidgets.QLabel('radius [cm]'), self.radius):
+        self.box_w = QtWidgets.QDoubleSpinBox(); self.box_w.setRange(0.01, 100); self.box_w.setDecimals(3)
+        self.box_w.setSingleStep(0.05)
+        self.box_w.setToolTip('Half-width of the box. Wide enough to hold this vessel, narrow enough to '
+                              'miss the one next to it.')
+        self.box_w.valueChanged.connect(lambda v: self.set_box('box_width', v))
+        self.box_l = QtWidgets.QDoubleSpinBox(); self.box_l.setRange(0.01, 1000); self.box_l.setDecimals(3)
+        self.box_l.setSingleStep(0.1)
+        self.box_l.setToolTip('How far the box reaches past the cut. It has to hold the vessel end; if it '
+                              'does not, the cut grows it and says so.')
+        self.box_l.valueChanged.connect(lambda v: self.set_box('box_length', v))
+        for w in (self.move_in, self.move_out, self.flip, QtWidgets.QLabel('radius [cm]'), self.radius,
+                  QtWidgets.QLabel('box half-width [cm]'), self.box_w,
+                  QtWidgets.QLabel('box length [cm]'), self.box_l):
             row.addWidget(w)
         row.addStretch()
         lay.addLayout(row)
@@ -144,9 +158,7 @@ class OutletsPage:
         self.count.setText('<b>%d of %d ends will be cut</b> (%d caps: 1 inlet, %d outlets)'
                            % (on, len(self.planes), on, max(on - 1, 0)))
         if self.selected is not None and 0 <= self.selected < len(self.planes):
-            self.radius.blockSignals(True)
-            self.radius.setValue(float(self.planes[self.selected].get('radius', 0.1)))
-            self.radius.blockSignals(False)
+            self._fill_boxes(self.planes[self.selected])
 
     def _item_changed(self, item):
         r, c = item.row(), item.column()
@@ -177,13 +189,19 @@ class OutletsPage:
             self.show_scene()
             self.message.setText('%s is the inlet now' % self.planes[r]['name'])
 
+    def _fill_boxes(self, p):
+        r = float(p.get('radius', 0.1))
+        for widget, key, default in ((self.radius, 'radius', r), (self.box_w, 'box_width', 1.6 * r),
+                                     (self.box_l, 'box_length', 3.0 * r)):
+            widget.blockSignals(True)
+            widget.setValue(float(p.get(key, default)))
+            widget.blockSignals(False)
+
     def select(self, row):
         if row is None or not (0 <= row < len(self.planes)):
             return
         self.selected = row
-        self.radius.blockSignals(True)
-        self.radius.setValue(float(self.planes[row].get('radius', 0.1)))
-        self.radius.blockSignals(False)
+        self._fill_boxes(self.planes[row])
         self.show_scene()
 
     def show_scene(self):
@@ -231,6 +249,13 @@ class OutletsPage:
         if p is None:
             return
         p['radius'] = float(value)
+        self.show_scene()
+
+    def set_box(self, key: str, value):
+        p = self._current()
+        if p is None:
+            return
+        p[key] = float(value)
         self.show_scene()
 
     # ---- saving and applying ---------------------------------------------

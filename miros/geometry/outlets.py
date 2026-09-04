@@ -133,7 +133,8 @@ def propose_from_closed_surface(surface: vtk.vtkPolyData, seed_point, back_off: 
             elif len(used) >= keep:
                 why = 'past the %d widest ends' % keep
         d = dict(name='', origin=[float(x) for x in origin], normal=[float(x) for x in normal],
-                 radius=r_here, inlet=is_inlet, use=not why, skipped=why)
+                 radius=r_here, inlet=is_inlet, use=not why, skipped=why,
+                 box_width=1.6 * r_here, box_length=(back_off + 1.5) * r_here)
         planes.append(d)
         if not why:
             used.append(d)
@@ -232,7 +233,8 @@ def propose_outlet_planes(centerline: vtk.vtkPolyData, back_off: float = 2.5, in
                 why = 'same vessel end as a cut already proposed'
                 break
         planes.append(dict(name='', origin=[float(v) for v in origin], normal=[float(v) for v in normal],
-                           radius=r_here, inlet=is_inlet, use=not why, skipped=why))
+                           radius=r_here, inlet=is_inlet, use=not why, skipped=why,
+                           box_width=1.6 * r_here, box_length=(back_off + 1.5) * r_here))
 
     paths = _polylines(centerline)
     if not paths:

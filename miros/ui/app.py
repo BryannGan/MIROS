@@ -168,6 +168,19 @@ class Viewer:
 
     PLANE_ON, PLANE_OFF, PLANE_SEL = 'steelblue', '#b9b9b9', 'gold'
 
+    @staticmethod
+    def _frame(origin, normal):
+        """4x4 transform taking the z axis onto `normal`, with the origin at the cut."""
+        n = np.asarray(normal, float)
+        n = n / max(np.linalg.norm(n), 1e-12)
+        helper = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        u = np.cross(helper, n)
+        u /= max(np.linalg.norm(u), 1e-12)
+        v = np.cross(n, u)
+        m = np.eye(4)
+        m[:3, 0], m[:3, 1], m[:3, 2], m[:3, 3] = u, v, n, np.asarray(origin, float)
+        return m
+
     def show_planes(self, surf, planes, selected=None, pick_callback=None):
         """The surface with one disc per vessel end: solid = will be cut, faint = candidate."""
         if self.plotter is None:
@@ -181,14 +194,19 @@ class Viewer:
             n = np.asarray(p['normal'], float)
             n = n / max(np.linalg.norm(n), 1e-12)
             r = float(p.get('radius', 0.1))
-            disc = pv.Disc(center=o, inner=0.0, outer=1.3 * r, normal=n, c_res=48)
             on = bool(p.get('use', True))
             color = self.PLANE_SEL if i == selected else (
                 self.INLET if (on and p.get('inlet')) else (self.PLANE_ON if on else self.PLANE_OFF))
+            hw = float(p.get('box_width', 1.6 * r))
+            length = float(p.get('box_length', 3.0 * r))
+            disc = pv.Disc(center=o, inner=0.0, outer=hw, normal=n, c_res=48)
             self.actors[i] = self.plotter.add_mesh(disc, color=color, opacity=0.95 if on else 0.35,
                                                    name='plane%d' % i)
-            arrow = pv.Arrow(start=o, direction=n, scale=1.6 * r)
-            self.plotter.add_mesh(arrow, color=color, opacity=0.9 if on else 0.3, name='arrow%d' % i)
+            # the box is what the cut removes: the wall inside it, on this side of the disc
+            box = pv.Cube(center=(0.0, 0.0, 0.5 * length), x_length=2 * hw, y_length=2 * hw, z_length=length)
+            box.transform(self._frame(o, n), inplace=True)
+            self.plotter.add_mesh(box, color=color, style='wireframe', line_width=2,
+                                  opacity=0.9 if on else 0.25, name='box%d' % i)
             if on:
                 points.append(o + 1.6 * r * n)
                 labels.append('%s%s' % (p.get('name', ''), ' (inlet)' if p.get('inlet') else ''))
