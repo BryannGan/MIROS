@@ -71,7 +71,26 @@ def box_corners(o, n, half_width: float, length: float) -> np.ndarray:
                      for a in (-1, 1) for b in (-1, 1) for c in (0, 1)])
 
 
-def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict], extent: float = 2.0,
+def triangles_only(mesh):
+    """
+    A surface of triangles and nothing else.
+
+    VTK stores a polydata's cells as verts, then lines, then polys, so one
+    stray line cell shifts every polygon's cell id. Cleaning can produce
+    exactly that (a degenerate triangle becomes a line), and code that
+    indexes cells by row of the polygon array would then address the wrong
+    cells. Dropping them keeps the two numbering schemes the same.
+    """
+    import pyvista as pv
+    mesh = pv.wrap(mesh).triangulate()
+    n_before = mesh.n_verts + mesh.n_lines
+    if n_before or mesh.n_strips:
+        keep = np.arange(n_before, n_before + mesh.n_faces_strict, dtype=np.int64)
+        mesh = mesh.extract_cells(keep).extract_surface(algorithm='dataset_surface')
+    return mesh
+
+
+def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict],
                      max_share: float = 0.5) -> vtk.vtkPolyData:
     """
     Open each vessel end with a box, and touch nothing else.
@@ -95,9 +114,13 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict], extent: f
     """
     import pyvista as pv
 
-    out = pv.wrap(surface).triangulate().clean()
+    out = triangles_only(pv.wrap(surface).clean())
+    # shares are measured by area against the model as it came in: a clip splits
+    # triangles, so counting cells would compare against a moving number
+    area0 = float(out.area)
     skipped: List[str] = []
     refused: List[str] = []
+    cut_made = False
     for k, p in enumerate(planes):
         o, n, half_width, length = box_of(p)
         r = float(p['radius'])
@@ -107,10 +130,12 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict], extent: f
             """(surface with that vessel end removed, cells removed, end fits in the box)."""
             corners = box_corners(o, direction, half_width, grown)
             lo, hi = corners.min(axis=0) - 1e-6, corners.max(axis=0) + 1e-6
-            pts = out.points
-            near_pt = np.all((pts >= lo) & (pts <= hi), axis=1)
-            tri = out.faces.reshape(-1, 4)[:, 1:]
-            near = np.where(near_pt[tri].any(axis=1))[0]        # only cells the box can reach
+            tri = out.faces.reshape(-1, 4)[:, 1:]               # triangles only: cell id == row here
+            corner_pts = out.points[tri]
+            cell_lo, cell_hi = corner_pts.min(axis=1), corner_pts.max(axis=1)
+            # cells whose own box overlaps the cut box: a triangle larger than the
+            # box would be missed by a test on its corners alone
+            near = np.where(np.all((cell_hi >= lo) & (cell_lo <= hi), axis=1))[0]
             if len(near) == 0:
                 return None, 0, False
             local = out.extract_cells(near).extract_surface(algorithm='dataset_surface')
@@ -134,26 +159,26 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict], extent: f
             keep_inside = inside.extract_cells(np.where(region != take)[0]).extract_surface(
                 algorithm='dataset_surface')
             fits = bool(((gone.points - o) @ direction).max() <= 0.98 * grown) if gone.n_points else False
-            merged = rest.merge([outside, keep_inside]).clean() if gone.n_cells else None
-            return merged, gone.n_cells, fits
+            merged = triangles_only(rest.merge([outside, keep_inside]).clean()) if gone.n_cells else None
+            return merged, float(gone.area), fits
 
         # the nearest vessel end wins: try both ways at the given length before
         # growing the box, so a cut does not run off to the far end of a vessel
-        best, removed, why, grown, used = None, 0, '', length, n
+        best, removed, why, grown, used = None, 0.0, '', length, n
         length_try = length
         for _ in range(3):
             for direction in (np.array(n), -np.array(n)):
-                merged, n_gone, fits = cut(direction, length_try)
+                merged, gone_area, fits = cut(direction, length_try)
                 if merged is None:
                     why = why or 'nothing inside the box'
                     continue
                 if not fits:
                     why = 'the vessel never ends inside the box'
                     continue
-                if n_gone > max_share * out.n_cells:
-                    why = 'it would take %.0f%% of the model' % (100.0 * n_gone / out.n_cells)
+                if gone_area > max_share * area0:
+                    why = 'it would take %.0f%% of the model' % (100.0 * gone_area / area0)
                     continue
-                best, removed, grown, used = merged, n_gone, length_try, direction
+                best, removed, grown, used = merged, gone_area, length_try, direction
                 break
             if best is not None:
                 break
@@ -165,7 +190,8 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict], extent: f
         p['normal'] = [float(v) for v in n]                    # the way it actually cut
         p['box_length'] = float(grown)                         # what it actually took to reach the end
         out = best
-        flatten_rim(out, o, n, 3.0 * max(half_width, r))
+        cut_made = True
+        flatten_rim(out, o, n, half_width)
     if skipped or refused:
         from ..ui import console
         if skipped:
@@ -174,6 +200,8 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict], extent: f
         if refused:
             console.warn('not cut: %s. On the Outlets step, move it toward the vessel end, narrow its box, '
                          'or turn the cut around.' % '; '.join(refused))
+    if not cut_made:
+        raise ValueError("no cut opened a vessel end: %s" % '; '.join(skipped + refused))
     conn = vtk.vtkPolyDataConnectivityFilter()
     conn.SetInputData(out)
     conn.SetExtractionModeToLargestRegion()
@@ -184,16 +212,17 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict], extent: f
     return clean.GetOutput()
 
 
-def flatten_rim(surf, origin, normal, reach: float) -> None:
+def flatten_rim(surf, origin, normal, half_width: float, tolerance: float = 0.35) -> None:
     """
     Put the rim of a fresh cut exactly on its plane.
 
     A box is not a linear function along a triangle edge, so the clip lands
     within a triangle of the plane; SimVascular projects the opening onto a
-    fitted plane for the same reason. No point moves further than the mesh
-    is coarse.
+    fitted plane for the same reason. Only the rim this cut just made is
+    moved: points across the box from the cut, and no further from its plane
+    than `tolerance` of the box width, so an opening a couple of radii away
+    is left where it is.
     """
-    import pyvista as pv
     surf.point_data['_miros_point'] = np.arange(surf.n_points, dtype=np.int64)
     edges = surf.extract_feature_edges(boundary_edges=True, feature_edges=False,
                                        manifold_edges=False, non_manifold_edges=False)
@@ -202,7 +231,10 @@ def flatten_rim(surf, origin, normal, reach: float) -> None:
         return
     ids = np.asarray(edges.point_data['_miros_point'], dtype=np.int64)
     pts = surf.points
-    near = ids[np.linalg.norm(pts[ids] - origin, axis=1) < reach]
+    rel = pts[ids] - origin
+    along = rel @ normal
+    across = np.linalg.norm(rel - np.outer(along, normal), axis=1)
+    near = ids[(np.abs(along) <= tolerance * half_width) & (across <= half_width)]
     if len(near):
         d = (pts[near] - origin) @ normal
         pts[near] = pts[near] - np.outer(d, normal)

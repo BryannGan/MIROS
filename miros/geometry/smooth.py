@@ -35,15 +35,22 @@ def smooth_surface(surface: vtk.vtkPolyData, iterations: int = 20, pass_band: fl
     f.NonManifoldSmoothingOn()
     f.NormalizeCoordinatesOn()          # without this the pass band means different things per model
     f.Update()
-    out = f.GetOutput()
     clean = vtk.vtkCleanPolyData()
-    clean.SetInputData(out)
+    clean.SetInputData(f.GetOutput())
+    clean.ConvertPolysToLinesOff()      # a degenerate triangle must not become a line cell
+    clean.ConvertLinesToPointsOff()
+    clean.ConvertStripsToPolysOff()
     clean.Update()
-    return clean.GetOutput()
+    tri = vtk.vtkTriangleFilter()
+    tri.SetInputData(clean.GetOutput())
+    tri.PassLinesOff()
+    tri.PassVertsOff()
+    tri.Update()
+    return tri.GetOutput()
 
 
 def wall_movement(before: vtk.vtkPolyData, after: vtk.vtkPolyData) -> Optional[float]:
-    """How far the smoothing moved the wall, in cm: the mean over the points it kept."""
+    """How far the smoothing moved the wall, in the surface's own units: the mean over its points."""
     import numpy as np
     from vtk.util.numpy_support import vtk_to_numpy as v2n
     if before.GetNumberOfPoints() != after.GetNumberOfPoints():

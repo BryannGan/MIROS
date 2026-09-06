@@ -64,9 +64,11 @@ def run(case):
         smoothed = smooth_surface(surf, iterations=m.smooth_iterations, pass_band=m.smooth_pass_band)
         moved = wall_movement(surf, smoothed)
         surf = smoothed
+        # the surface is still in its own units here: the mm -> cm conversion is below
+        to_mm = 1.0 if units == 'mm' else 10.0
         console.info("smoothed the wall: %d passes at pass band %g%s" % (
             m.smooth_iterations, m.smooth_pass_band,
-            '' if moved is None else ', the wall moved %.3f mm on average' % (10.0 * moved)))
+            '' if moved is None else ', the wall moved %.3f mm on average' % (to_mm * moved)))
     if planes:
         surf = clip_with_planes(surf, planes)
         console.info("clipped %d outlet planes%s" % (len(planes), '' if m.outlets else ' (proposed by the segment stage)'))

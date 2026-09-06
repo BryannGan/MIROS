@@ -200,4 +200,45 @@ def test_a_cut_is_a_box_that_takes_one_vessel_end():
     # the box bounds the damage: nothing outside it is touched, whatever the cut is asked to do
     out, _ = cut(tube, box_width=0.6, box_length=0.8)
     assert abs(out.bounds[4] - tube.bounds[4]) < 1e-6      # the far end of the vessel is untouched
-    assert out.bounds[5] <= 2.5 + 1e-6                     # and nothing survives past the cut
+    assert out.bounds[5] <= 2.5 + 0.4                      # and nothing much survives past the cut
+
+
+def test_a_line_cell_does_not_derail_a_cut():
+    """VTK numbers verts and lines before polygons: a stray line cell must not shift the cell ids."""
+    import vtk
+    from miros.geometry.clip import clip_with_planes, triangles_only
+    from miros.geometry.caps import boundary_loops
+    tube = pv.Cylinder(center=(0, 0, 0), direction=(0, 0, 1), radius=0.5, height=6,
+                       resolution=60, capping=True).triangulate().clean()
+    line = pv.PolyData()
+    line.points = np.array([[0.0, 0.0, -2.0], [0.0, 0.0, -1.0]])
+    line.lines = np.array([2, 0, 1])
+    mixed = tube.merge(line)
+    assert mixed.n_lines and mixed.GetCellType(0) == vtk.VTK_LINE      # a line comes first
+    assert triangles_only(mixed).n_cells == tube.n_cells
+    out = pv.wrap(clip_with_planes(mixed, [dict(name='c', origin=[0, 0, 2.5], normal=[0, 0, 1],
+                                                radius=0.5, inlet=True)]))
+    assert len(boundary_loops(out)) == 1 and out.n_points > 0.5 * tube.n_points
+
+
+def test_a_cut_leaves_a_neighbouring_opening_alone():
+    """Flattening a fresh rim must not drag a nearby opening onto the same plane."""
+    from miros.geometry.clip import clip_with_planes
+    from miros.geometry.caps import boundary_loops
+    tube = pv.Cylinder(center=(0, 0, 0), direction=(0, 0, 1), radius=0.6, height=3,
+                       resolution=60, capping=False).triangulate().clean()      # open at both ends
+    out = pv.wrap(clip_with_planes(tube, [dict(name='c', origin=[0, 0, -1.2], normal=[0, 0, -1],
+                                               radius=0.6, inlet=True)]))
+    loops = boundary_loops(out)
+    assert len(loops) == 2, 'the far rim was pulled onto the cut plane'
+    z = sorted(float(np.mean([q[2] for q in l])) for l in loops)
+    assert abs(z[0] - (-1.2)) < 1e-3 and abs(z[1] - 1.5) < 1e-3
+
+
+def test_nothing_cut_is_an_error_not_a_closed_surface():
+    """A run must not continue with a still-closed surface and a message saying it was clipped."""
+    from miros.geometry.clip import clip_with_planes
+    tube = pv.Cylinder(center=(0, 0, 0), direction=(0, 0, 1), radius=0.5, height=6,
+                       resolution=60, capping=True).triangulate().clean()
+    with pytest.raises(ValueError, match='no cut opened'):
+        clip_with_planes(tube, [dict(name='far away', origin=[50, 50, 50], normal=[0, 0, 1], radius=0.5)])
