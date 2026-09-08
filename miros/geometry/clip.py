@@ -1,14 +1,17 @@
 """
-Deterministic outlet clipping from cut planes (the `model.outlets` list in
-case.yaml). Each plane removes the distal half-ball of radius
-`extent * radius` around its origin, so a cut can only remove the local
-vessel end and never a neighbouring vessel. The largest connected piece
-is kept.
+Opening the vessel ends of a closed surface, from the cuts in the
+`model.outlets` list of case.yaml (what the Outlets step of `miros gui`
+writes).
 
     outlets:
-      - {name: aorta_in, origin: [x, y, z], normal: [nx, ny, nz], radius: 1.1, inlet: true}
+      - {name: aorta_in, origin: [x, y, z], normal: [nx, ny, nz], radius: 1.1,
+         box_width: 1.8, box_length: 4.4, inlet: true, use: true}
 
-`normal` points OUT of the vessel (toward the piece to discard).
+Each cut is a box, not a plane: it starts at `origin`, reaches `box_length`
+along `normal` and is `box_width` wide, so only the wall inside it can be
+removed. `normal` points out of the vessel, toward the piece to discard.
+Of the wall inside the box, only the piece connected to that vessel end
+goes, and the rim left behind is put on the plane of the cut.
 """
 from typing import Dict, List, Sequence
 
