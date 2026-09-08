@@ -186,3 +186,56 @@ def test_segment_page_loads_a_typed_image_path(qt_app, tmp_path):
     w.segment.image_edit.setText(str(tmp_path / 'missing.vti'))
     w.segment._image_path_typed()
     assert errors and 'no such file' in errors[-1]
+
+
+def test_stop_button_ends_the_run_and_shows_progress(surface_path, tmp_path, qt_app, monkeypatch):
+    """Progress reported by a stage reaches the bar; Stop ends the worker, which is released cleanly."""
+    import threading
+    import time
+    from miros.cli import main
+    from miros.case import RunCancelled
+    from miros.ui import app as A
+    d = tmp_path / 'c'
+    assert main(['init', str(d), '--surface', str(surface_path)]) == 0
+
+    def fake_run(case_dir, from_stage, force, emit_line, emit_stage, until=None, only=None,
+                 cancel=None, emit_progress=None):
+        assert isinstance(cancel, threading.Event)
+        emit_stage('preprocess', 'start')
+        emit_line('working')
+        for i in range(1, 201):
+            emit_progress(i, 200, 'step %d of 200' % i)
+            if cancel.wait(0.02):
+                raise RunCancelled('stopped at step %d' % i)
+        emit_stage('preprocess', 'done')
+    monkeypatch.setattr(A, 'run_case_blocking', fake_run)
+
+    w = A.MainWindow(d, offscreen=True)
+    w.win.show()
+    outcome = []
+    w.start_run(None, False, on_done=outcome.append)
+    assert w.worker is not None and not w.run_btn.isEnabled() and w.stop_btn.isEnabled()
+    t0 = time.time()
+    while w.progress_bar.value() < 3 and time.time() - t0 < 10:
+        qt_app.processEvents(); time.sleep(0.01)
+    assert w.progress_bar.value() >= 3 and w.progress_bar.maximum() == 200
+    assert w.progress_text.text().startswith('step ') and w.tabs.currentIndex() == w.TAB_RUN
+    from miros.config import STAGES
+    assert w.stage_table.item(STAGES.index('preprocess'), 1).text() == 'running…'
+    w.stop_run()
+    assert not w.stop_btn.isEnabled()
+    while w.worker is not None and time.time() - t0 < 15:
+        qt_app.processEvents(); time.sleep(0.01)
+    assert w.worker is None, 'the worker did not finish after Stop'
+    assert outcome == ['stopped']
+    assert w.run_btn.isEnabled() and w.force_btn.isEnabled() and not w.stop_btn.isEnabled()
+    assert w.progress_text.text() == 'stopped' and w.progress_bar.maximum() == 1
+    log = w.log.toPlainText()
+    assert 'stop requested' in log and 'run stopped (stopped at step' in log
+    assert w.case.status()[1][1] == 'never'                  # nothing was recorded for the stopped stage
+    w.start_run(None, False, on_done=outcome.append)          # and a new run can start
+    assert w.worker is not None
+    w.stop_run()
+    while w.worker is not None and time.time() - t0 < 25:
+        qt_app.processEvents(); time.sleep(0.01)
+    assert outcome == ['stopped', 'stopped']

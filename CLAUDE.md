@@ -29,7 +29,7 @@ editable (`pip install -e .`). OneDSolver at `/usr/local/sv/oneDSolver/2025-07-0
 | `miros/rom/`, `miros/rom_extract/` | vendored SimVascular `sv_rom_simulation` / `sv_rom_extract_results`; see `VENDORED.md` in each |
 | `miros/rom_model.py` | `build_rom_model()`: surface → caps → centerlines → 0D JSON / 1D input |
 | `miros/tuning/windkessel.py` | analytic Windkessel init + fixed-point RCR tuning |
-| `miros/io/` | the only readers/writers for `rcrt.dat`, `.flow`, 0D JSON, OneDSolver runs |
+| `miros/io/` | the only readers/writers for `rcrt.dat`, `.flow`, 0D JSON, OneDSolver runs; `process.py` runs external programs streamed, logged, stoppable (`case.cancel`) |
 | `miros/ui/` | console output (rich, plain fallback), matplotlib waveform editor |
 | `examples/aorta/` | runnable example (`case.yaml`, surface, inflow) + `reference/` from SimVascular for the validation tests |
 | `tests/unit`, `tests/integration` | `pytest`; integration tests are `slow`, skip without solvers |

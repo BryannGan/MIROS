@@ -14,8 +14,8 @@ Outputs in work/:
 import json
 import re
 import shutil
-import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +23,7 @@ import numpy as np
 from ..config import ConfigError
 from ..geometry.caps import read_polydata
 from ..geometry.outlets import propose_from_closed_surface, propose_outlet_planes
+from ..io.process import run_logged, strip_ansi
 from ..manifest import file_hash, value_hash
 from ..models import MODELS, find_model_folder
 from ..ui import console
@@ -114,6 +115,83 @@ def _config_name(case) -> str:
 def _steps_in_name(p: Path) -> int:
     m = re.search(r'_(\d+)_steps', p.name)
     return int(m.group(1)) if m else -1
+
+
+# ---- watching SeqSeg while it runs -------------------------------------------
+#
+# What SeqSeg sends down the pipe is nnU-Net's progress bar for every
+# prediction, a few warnings, and its own opening and closing lines. Its
+# tracing log, with the step counter, goes elsewhere: unless DEBUG is on (and
+# DEBUG stops in pdb at DEBUG_STEP, so it cannot be turned on) it points
+# sys.stdout at out.txt in its scratch directory, next to work/seqseg. The
+# counter is read from that file as it grows. Python buffers that file, so
+# it advances every few steps rather than every step.
+
+_TQDM = re.compile(r'^\s*\d+%\|')
+_STEP = re.compile(r'\*\*\* Step number (\d+) \*\*\*')
+_NEW_BRANCH = 'Post Branches are'          # printed each time SeqSeg starts on another branch
+
+
+def _log_line(line: str) -> None:
+    """SeqSeg's words go to the log; nnU-Net's per-prediction bar (one per step, hundreds) does not."""
+    s = strip_ansi(line).rstrip()
+    if not s.strip() or _TQDM.match(s):
+        return
+    console.info(s)
+
+
+class _Tracing:
+    """Follows SeqSeg's step counter in its out.txt and reports it as progress."""
+
+    def __init__(self, work: Path, max_steps: int):
+        self.work, self.max_steps = Path(work), int(max_steps)
+        self.path = None
+        self.offset = 0
+        self.step = -1
+        self.branch = 1
+        self.first = None            # (step, time) when the counter was first seen, for the rate
+
+    def _find(self):
+        if self.path is None or not self.path.exists():
+            found = list(self.work.glob('seqseg*/out.txt'))
+            self.path = max(found, key=lambda p: p.stat().st_mtime) if found else None
+        return self.path
+
+    def read(self, text: str) -> bool:
+        """Take in new text of the log; True when the step counter moved."""
+        steps = [int(s) for s in _STEP.findall(text)]
+        self.branch += text.count(_NEW_BRANCH)
+        if not steps or max(steps) <= self.step:
+            return False
+        self.step = max(steps)
+        if self.first is None:
+            self.first = (self.step, time.time())
+        return True
+
+    def text(self) -> str:
+        s = 'step %d of up to %d, branch %d' % (self.step + 1, self.max_steps, self.branch)
+        done = self.step - self.first[0]
+        if done >= 4:
+            per = (time.time() - self.first[1]) / done
+            left = per * (self.max_steps - self.step)
+            s += ' (%.1f s per step, at most %s more)' % (per, '%.0f min' % (left / 60) if left >= 90 else '%.0f s' % left)
+        return s
+
+    def poll(self) -> None:
+        p = self._find()
+        if p is None:
+            return
+        try:
+            with open(p, 'rb') as f:
+                f.seek(self.offset)
+                new = f.read()
+        except OSError:
+            return
+        if not new:
+            return
+        self.offset += len(new)
+        if self.read(new.decode('utf-8', 'replace')):
+            console.progress(self.step + 1, self.max_steps, self.text())
 
 
 ITK_SUFFIXES = ('.nii', '.nii.gz', '.mha', '.mhd', '.nrrd', '.nhdr', '.dcm', '.hdr', '.img')
@@ -224,7 +302,7 @@ def run(case):
     seeds_json = out / 'seeds.json'
     seeds_json.write_text(json.dumps([{'name': stem, 'seeds': seeds, 'cardiac_mesh': False}], indent=2))
 
-    cmd = [sys.executable, '-m', 'seqseg.seqseg', 'run', 'single',
+    cmd = [sys.executable, '-u', '-m', 'seqseg.seqseg', 'run', 'single',      # -u: its lines arrive as printed
            '--image', str(image), '--outdir', str(out), '--model-folder', str(folder),
            '--train-dataset', dataset, '--config-name', config_name,
            '--unit', sg.units, '--scale', '%g' % _scale(sg.units, model_units),
@@ -240,11 +318,21 @@ def run(case):
         sg.max_steps, sg.max_branches, sg.max_steps_per_branch, sg.assembly_threshold,
         ', centerline of the whole tree' if sg.extract_centerline else ''))
     log = out / 'seqseg.log'
-    with open(log, 'w', encoding='utf-8', newline='\n') as f:
-        proc = subprocess.run(cmd, cwd=str(out), stdout=f, stderr=subprocess.STDOUT)
-    if proc.returncode != 0:
+    tracing = _Tracing(case.work, sg.max_steps)
+    console.progress(0, sg.max_steps, 'starting SeqSeg (loading the model) ...')
+    t0 = time.time()
+    code = run_logged(cmd, log, cwd=out, on_line=_log_line, cancel=case.cancel, poll=tracing.poll, poll_interval=1.0,
+                      name='SeqSeg')
+    console.progress(None)
+    if tracing.step >= 0:
+        console.info('traced %d steps on %d branch(es) in %.0f s' % (tracing.step + 1, tracing.branch, time.time() - t0))
+    if code != 0:
         tail = log.read_text(errors='replace').splitlines()[-25:]
-        raise RuntimeError("SeqSeg failed (exit %d). Log tail:\n%s" % (proc.returncode, '\n'.join(tail)))
+        why = ''
+        if code == -9:
+            why = (" Exit -9 means the process was killed, which on Linux is usually the kernel running out "
+                   "of memory (see `dmesg`); a shorter trace with extract_centerline off needs far less.")
+        raise RuntimeError("SeqSeg failed (exit %d).%s Log tail:\n%s" % (code, why, '\n'.join(tail)))
 
     surfaces = [p for p in out.rglob('*_surface_mesh_*_steps.vtp') if 'nonsmooth' not in p.name]
     if not surfaces:

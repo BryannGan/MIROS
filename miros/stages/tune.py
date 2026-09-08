@@ -58,7 +58,7 @@ def run(case):
         ('/%g' % p.mean) if p.mean is not None else '', bc.tolerance_pct))
     rcr, report = tune(cfg, names, targets, t, q, float(t[-1]), tolerance_pct=bc.tolerance_pct,
                        max_iterations=bc.max_iterations, rp_fraction=bc.rp_fraction, cycles=bc.tuning_cycles,
-                       log=console.info)
+                       log=console.info, check=case.check_cancelled)
     write_rcrt(rcr, names, case.rcrt)
     case.tuning_report.write_text(json.dumps(report.as_dict(), indent=2, default=float))
 

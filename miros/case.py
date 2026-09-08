@@ -10,11 +10,13 @@ and writes, and runs the stages that are out of date.
       .miros/manifest.json
 """
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .config import STAGES, CaseConfig, load_config
+from .io.process import RunCancelled  # noqa: F401 - re-exported: `from miros.case import RunCancelled`
 from .manifest import Manifest
 from .ui import console
 
@@ -34,6 +36,12 @@ class Case:
         self.work = self.dir / 'work'
         self.results = self.dir / 'results'
         self.manifest = Manifest(self.dir / '.miros' / 'manifest.json')
+        self.cancel = threading.Event()      # set (from any thread) to stop the run; stages read it
+
+    def check_cancelled(self) -> None:
+        """For a stage's own loop: raises RunCancelled once a stop was requested."""
+        if self.cancel.is_set():
+            raise RunCancelled('stopped')
 
     # ---- paths ---------------------------------------------------------
     def resolve(self, rel) -> Path:
@@ -104,11 +112,18 @@ class Case:
         return rows
 
     def run(self, from_stage: Optional[str] = None, until: Optional[str] = None, force: bool = False,
-            only: Optional[Sequence[str]] = None, progress=None) -> List[str]:
+            only: Optional[Sequence[str]] = None, progress=None,
+            cancel: Optional[threading.Event] = None) -> List[str]:
         """
         Run stale stages in order; returns the names of the stages that ran.
         progress(stage, event) is called with event in {'start', 'done', 'fresh', 'skipped'}.
+        cancel: a threading.Event; once set, the run stops before the next stage
+        (a subprocess stage stops within seconds) and RunCancelled is raised.
+        Nothing is recorded for the stage that was stopped, so the next run
+        resumes there.
         """
+        if cancel is not None:
+            self.cancel = cancel
         notify = progress or (lambda *a: None)
         names = [s.name for s in self.stages()]
         for s in (from_stage, until):
@@ -136,11 +151,17 @@ class Case:
                 console.info("%-12s up to date (%s)" % (st.name, reason))
                 notify(st.name, 'fresh')
                 continue
+            if self.cancel.is_set():
+                raise RunCancelled('stopped before %s' % st.name)
             console.section("%s  (%s)" % (st.name, 'forced' if (force or i_from is not None) else reason))
             notify(st.name, 'start')
             t0 = time.time()
             try:
                 outputs = st.run(self)
+            except RunCancelled:
+                console.progress(None)
+                console.warn("%s stopped after %.1f s" % (st.name, time.time() - t0))
+                raise
             except Exception as e:                       # noqa: BLE001
                 if not st.optional:
                     raise
@@ -148,6 +169,7 @@ class Case:
                 notify(st.name, 'skipped')
                 continue
             self.manifest.record(st.name, inputs, [str(o) for o in outputs], extra={'seconds': round(time.time() - t0, 1)})
+            console.progress(None)
             console.ok("%s done in %.1f s" % (st.name, time.time() - t0))
             notify(st.name, 'done')
             ran.append(st.name)

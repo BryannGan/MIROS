@@ -1,9 +1,11 @@
 """
 Running svOneDSolver and checking that it actually produced results.
 """
-import subprocess
+import threading
 from pathlib import Path
 from typing import List, Optional
+
+from .process import run_logged
 
 
 class OneDSolverError(RuntimeError):
@@ -11,12 +13,13 @@ class OneDSolverError(RuntimeError):
 
 
 def run_onedsolver(executable, input_file, workdir, log_name: str = 'onedsolver.log',
-                   timeout: Optional[float] = None) -> Path:
+                   timeout: Optional[float] = None, cancel: Optional[threading.Event] = None) -> Path:
     """
     Run OneDSolver on `input_file` inside `workdir` (created if needed).
 
     Success means exit code 0 AND at least one *_flow.dat result file in
-    workdir. Raises OneDSolverError with the log tail otherwise.
+    workdir. Raises OneDSolverError with the log tail otherwise, and
+    RunCancelled if `cancel` is set while it runs (the solver is killed).
     Returns the log path.
     """
     workdir = Path(workdir)
@@ -25,14 +28,13 @@ def run_onedsolver(executable, input_file, workdir, log_name: str = 'onedsolver.
     if not Path(executable).exists():
         raise OneDSolverError("OneDSolver executable not found: %s" % executable)
     log = workdir / log_name
-    with open(log, 'w', encoding='utf-8', newline='\n') as f:
-        proc = subprocess.run([executable, str(Path(input_file).resolve())], cwd=str(workdir),
-                              stdout=f, stderr=subprocess.STDOUT, timeout=timeout)
+    code = run_logged([executable, str(Path(input_file).resolve())], log, cwd=workdir,
+                      cancel=cancel, timeout=timeout, name='OneDSolver')
     results = list(workdir.glob('*_flow.dat'))
-    if proc.returncode != 0 or not results:
+    if code != 0 or not results:
         tail = log.read_text(errors='replace').splitlines()[-25:]
         raise OneDSolverError("OneDSolver failed (exit %d, %d result files). Log tail:\n%s" %
-                              (proc.returncode, len(results), '\n'.join(tail)))
+                              (code, len(results), '\n'.join(tail)))
     return log
 
 

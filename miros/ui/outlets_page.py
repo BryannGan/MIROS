@@ -282,8 +282,12 @@ class OutletsPage:
         # only the clipping: re-running the segment stage here would trace the image again
         self.main.start_run(None, True, until='preprocess', only=['preprocess'], on_done=self._done)
 
-    def _done(self, ok):
-        if not ok:
+    def _done(self, status):
+        if status == 'stopped':
+            self.main.tabs.setCurrentIndex(self.main.TAB_OUTLETS)
+            self.message.setText('stopped before the cuts were applied; press Apply to try again')
+            return
+        if status != 'done':
             self.main.tabs.setCurrentIndex(self.main.TAB_OUTLETS)
             self.message.setText('the cuts did not work out — see the log on the Run step, then move or untick '
                                  'the cut it names and apply again')

@@ -42,4 +42,5 @@ include = ["miros*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["manual"]           # tests/manual are scripts that need a window or a real segmentation
 markers = ["slow: takes more than a few seconds"]

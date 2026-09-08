@@ -4,7 +4,7 @@ the output is a terminal; plain text otherwise (or when set_plain(True) is
 called, e.g. by the GUI, which captures the output into a text pane).
 """
 import sys
-from typing import Iterable, Optional, Sequence
+from typing import Callable, Iterable, Optional, Sequence
 
 try:
     from rich.console import Console as _RichConsole
@@ -35,7 +35,55 @@ def _rich():
     return _rich_console if (_rich_console is not None and not PLAIN) else None
 
 
+# ---- progress of the running step -----------------------------------------
+# A long stage reports where it is (SeqSeg's step counter, for one). The GUI
+# installs a handler and draws a bar; on a terminal the line updates in
+# place; piped, a line goes out about every tenth so a log stays readable.
+
+_progress_handler: Optional[Callable] = None
+_progress_on_line = False          # a \r-updated line is on the terminal now
+_progress_last_bucket = None
+
+
+def set_progress_handler(fn: Optional[Callable]) -> None:
+    """fn(done, total, text) receives every report; None restores printing."""
+    global _progress_handler
+    _progress_handler = fn
+
+
+def progress(done: Optional[float], total: Optional[float] = None, text: str = '') -> None:
+    """
+    Where the running step is: `done` of `total` (None when the total is not
+    known) and a short text. done=None clears the report.
+    """
+    global _progress_on_line, _progress_last_bucket
+    if _progress_handler is not None:
+        _progress_handler(done, total, text)
+        return
+    if done is None:
+        _end_progress_line()
+        _progress_last_bucket = None
+        return
+    line = text or ('%s of %s' % (done, total) if total else str(done))
+    if getattr(sys.stdout, 'isatty', lambda: False)():
+        print('\r  ' + line.ljust(78)[:78], end='', flush=True)
+        _progress_on_line = True
+        return
+    bucket = int(10.0 * done / total) if total else int(done) // 25
+    if bucket != _progress_last_bucket:
+        _progress_last_bucket = bucket
+        print('  ' + line)
+
+
+def _end_progress_line() -> None:
+    global _progress_on_line
+    if _progress_on_line:
+        print()
+        _progress_on_line = False
+
+
 def section(title: str) -> None:
+    _end_progress_line()
     c = _rich()
     if c:
         c.rule("[bold]%s[/bold]" % title)
@@ -44,10 +92,12 @@ def section(title: str) -> None:
 
 
 def info(msg: str) -> None:
+    _end_progress_line()
     print("  " + msg)
 
 
 def ok(msg: str) -> None:
+    _end_progress_line()
     c = _rich()
     if c:
         c.print("  [green]OK[/green] " + msg)
@@ -56,6 +106,7 @@ def ok(msg: str) -> None:
 
 
 def warn(msg: str) -> None:
+    _end_progress_line()
     c = _rich()
     if c:
         c.print("  [yellow]WARNING[/yellow] " + msg)
@@ -64,6 +115,7 @@ def warn(msg: str) -> None:
 
 
 def error(msg: str) -> None:
+    _end_progress_line()
     c = _rich()
     if c:
         c.print("  [red]ERROR[/red] " + msg)
@@ -72,6 +124,7 @@ def error(msg: str) -> None:
 
 
 def table(columns: Sequence[str], rows: Iterable[Sequence], title: Optional[str] = None) -> None:
+    _end_progress_line()
     rows = [[str(c) for c in r] for r in rows]
     c = _rich()
     if c:

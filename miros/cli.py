@@ -102,7 +102,7 @@ def cmd_init(args):
 
 
 def cmd_run(args):
-    from .case import Case, StageError
+    from .case import Case, RunCancelled, StageError
     from .config import ConfigError
     try:
         case = Case(args.dir)
@@ -110,6 +110,13 @@ def cmd_run(args):
     except (StageError, ConfigError) as e:
         console.error(str(e))
         return 1
+    except RunCancelled as e:
+        console.warn("run stopped (%s); `miros run` again resumes there" % e)
+        return 130
+    except KeyboardInterrupt:
+        console.progress(None)
+        console.warn("interrupted; `miros run` again resumes where it stopped")
+        return 130
     console.section("done")
     console.info("stages run: %s" % (', '.join(ran) if ran else 'none (everything up to date)'))
     console.info("results: %s" % case.results)

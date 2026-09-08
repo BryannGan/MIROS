@@ -484,8 +484,8 @@ class SegmentPage:
         self.pick_btn.setChecked(False)
         self.main.start_run(None, False, until='segment', on_done=self._segment_done)
 
-    def _segment_done(self, ok):
-        if not ok:
+    def _segment_done(self, status):
+        if status != 'done':                  # stopped or failed: the Run step's log says what happened
             return
         self.main.load_case(self.main.case.dir)
         if self.main.outlets.planes:

@@ -9,7 +9,7 @@ Right, as steps:
     1 Model     pick the clipped surface (and units), create or open the case
     2 Inflow    draw one cardiac cycle on an embedded editor, or load a file
     3 Targets   name caps, choose the inlet, flow shares, pressure anchor/targets
-    4 Run       run the stale stages in the background with a live log
+    4 Run       run the stale stages in the background: live log, progress bar, Stop button
     5 Results   per-outlet numbers, the 0D plot, and 1D pressure/flow on the 3D view
 
 Needs the GUI extra: pip install pyvistaqt PySide6
@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import traceback
 from pathlib import Path
 from typing import List, Optional
@@ -404,42 +405,56 @@ class _RunEmitter:
         class Emitter(QtCore.QObject):
             line = QtCore.Signal(str)
             stage = QtCore.Signal(str, str)
-            done = QtCore.Signal(bool, str)
+            progress = QtCore.Signal(object, object, str)      # done, total (None = unknown), text
+            done = QtCore.Signal(str, str)                     # 'done' | 'stopped' | 'failed', detail
         return Emitter()
 
 
 class _LineWriter(io.TextIOBase):
+    """stdout for the worker: whole lines to emit. A subprocess reader thread writes here too."""
+
     def __init__(self, emit):
         super().__init__()
         self.emit = emit
         self.buf = ''
+        self.lock = threading.Lock()
 
     def write(self, s):
-        self.buf += s
-        while '\n' in self.buf:
-            line, self.buf = self.buf.split('\n', 1)
-            self.emit(line)
+        with self.lock:
+            self.buf += s
+            while '\n' in self.buf:
+                line, self.buf = self.buf.split('\n', 1)
+                self.emit(line)
         return len(s)
 
     def flush(self):
-        if self.buf:
-            self.emit(self.buf)
-            self.buf = ''
+        with self.lock:
+            if self.buf:
+                self.emit(self.buf)
+                self.buf = ''
 
 
-def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage, until=None, only=None) -> None:
-    """The pipeline with plain-text console output routed to emit_line; raises on failure."""
+def run_case_blocking(case_dir, from_stage, force, emit_line, emit_stage, until=None, only=None,
+                      cancel=None, emit_progress=None) -> None:
+    """
+    The pipeline with plain-text console output routed to emit_line; raises on
+    failure, RunCancelled once `cancel` (a threading.Event) is set. Progress
+    reports go to emit_progress(done, total, text) when given.
+    """
     from ..case import Case
     from . import console
     w = _LineWriter(emit_line)
     console.set_plain(True)                  # no ANSI colours / box drawing in the log pane
     console.set_interactive(False)           # a stage must never open a blocking window in this thread
+    console.set_progress_handler(emit_progress)
     try:
         with contextlib.redirect_stdout(w), contextlib.redirect_stderr(w):
-            Case(case_dir).run(from_stage=from_stage, until=until, force=force, only=only, progress=emit_stage)
+            Case(case_dir).run(from_stage=from_stage, until=until, force=force, only=only, progress=emit_stage,
+                               cancel=cancel)
     finally:
         w.flush()
         console.set_plain(False)
+        console.set_progress_handler(None)
 
 
 # ============================================================================
@@ -461,14 +476,24 @@ class MainWindow:
         self.inlet_row = 0
         self.selected = None
         self.worker = None
+        self._cancel = None                # threading.Event of the run in progress
 
         owner = self
 
         class _Main(QtWidgets.QMainWindow):
             def closeEvent(self, ev):                       # never destroy a running worker thread
                 if owner.worker is not None and owner.worker.isRunning():
-                    r = QtWidgets.QMessageBox.question(self, 'MIROS', 'A run is in progress. Wait for it to finish?')
-                    if r == QtWidgets.QMessageBox.Yes:
+                    box = QtWidgets.QMessageBox(self)
+                    box.setWindowTitle('MIROS')
+                    box.setText('A run is in progress.')
+                    stop = box.addButton('Stop it and close', QtWidgets.QMessageBox.DestructiveRole)
+                    wait = box.addButton('Wait for it', QtWidgets.QMessageBox.AcceptRole)
+                    box.addButton(QtWidgets.QMessageBox.Cancel)
+                    box.exec_()
+                    if box.clickedButton() is stop:
+                        owner.stop_run()
+                        owner.worker.wait()
+                    elif box.clickedButton() is wait:
                         owner.worker.wait()
                     else:
                         ev.ignore()
@@ -1069,8 +1094,19 @@ class MainWindow:
         self.run_btn.setToolTip('run the stages that are stale or have never run')
         self.force_btn = W.QPushButton('Re-run everything'); self.force_btn.clicked.connect(lambda: self.start_run(None, True))
         self.force_btn.setToolTip('ignore what was already computed and run every stage again')
-        row.addWidget(self.run_btn); row.addWidget(self.force_btn); row.addStretch()
+        self.stop_btn = W.QPushButton('■ Stop'); self.stop_btn.clicked.connect(self.stop_run)
+        self.stop_btn.setToolTip('stop the run. Segmentation, the 1D solver and the tuning stop within seconds; '
+                                 'another stage finishes first. Nothing is recorded for a stopped stage, '
+                                 'so the next Run resumes there.')
+        self.stop_btn.setEnabled(False)
+        row.addWidget(self.run_btn); row.addWidget(self.force_btn); row.addWidget(self.stop_btn); row.addStretch()
         lay.addLayout(row)
+        prow = W.QHBoxLayout()
+        self.progress_bar = W.QProgressBar(); self.progress_bar.setRange(0, 1); self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_text = W.QLabel(''); self.progress_text.setStyleSheet('color: gray')
+        prow.addWidget(self.progress_bar, 1); prow.addWidget(self.progress_text, 2)
+        lay.addLayout(prow)
         self.log = W.QPlainTextEdit(); self.log.setReadOnly(True)
         self.log.setFont(self.QtGui.QFontDatabase.systemFont(self.QtGui.QFontDatabase.FixedFont))   # any OS
         self.log.setMaximumBlockCount(5000)
@@ -1116,36 +1152,77 @@ class MainWindow:
     def _stage_event(self, stage, event):
         i = STAGES.index(stage)
         self.stage_table.item(i, 1).setText({'start': 'running…', 'done': 'done', 'fresh': 'fresh', 'skipped': 'skipped'}[event])
+        if event == 'start':
+            self._running_stage = stage
+            self._show_progress(None, None, 'running %s …' % stage)
+        elif getattr(self, '_running_stage', None) == stage:
+            self._running_stage = None
+            self.stage_table.item(i, 2).setText('')
+
+    def _show_progress(self, done, total, text):
+        """A stage's report: done of total (None = busy, no count), and the text next to the bar."""
+        bar = self.progress_bar
+        if done is None and self.worker is None:
+            bar.setRange(0, 1); bar.setValue(0)              # idle
+        elif done is None or not total:
+            bar.setRange(0, 0)                               # busy, no count
+        else:
+            bar.setRange(0, int(total)); bar.setValue(min(int(done), int(total)))
+        self.progress_text.setText(text)
+        stage = getattr(self, '_running_stage', None)
+        if stage is not None and text:
+            self.stage_table.item(STAGES.index(stage), 2).setText(text[:90])
 
     def start_run(self, from_stage, force, until=None, on_done=None, only=None):
+        """
+        Run the pipeline in a worker thread. on_done(status) is called at the
+        end with 'done', 'stopped' (the Stop button) or 'failed'.
+        """
         if self.case is None:
             return self.error('create or open a case first')
         if self.worker is not None:
             return
         from qtpy import QtCore
+        from ..case import RunCancelled
         self.log.clear()
         self.run_btn.setEnabled(False)
         self.force_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
         self.tabs.setCurrentIndex(self.TAB_RUN)
         em = _RunEmitter.make()
         em.line.connect(self.log.appendPlainText)
         em.stage.connect(self._stage_event)
+        em.progress.connect(self._show_progress)
         em.done.connect(self._run_done)
         self._emitter = em
         self._on_run_done = on_done
+        self._cancel = cancel = threading.Event()
+        self._running_stage = None
         case_dir = self.case.dir
 
         class Worker(QtCore.QThread):
             def run(w):
                 try:
                     run_case_blocking(case_dir, from_stage, force, em.line.emit, em.stage.emit, until=until,
-                                      only=only)
-                    em.done.emit(True, '')
+                                      only=only, cancel=cancel, emit_progress=em.progress.emit)
+                    em.done.emit('done', '')
+                except RunCancelled as e:
+                    em.done.emit('stopped', str(e))
                 except Exception:
-                    em.done.emit(False, traceback.format_exc())
+                    em.done.emit('failed', traceback.format_exc())
         self.worker = Worker(self.win)          # parented to the window; released only once Qt says it finished
         self.worker.finished.connect(self._worker_finished)
+        self._show_progress(None, None, 'starting …')
         self.worker.start()
+
+    def stop_run(self):
+        """The Stop button: ask the run to stop. A subprocess dies within seconds; other stages finish first."""
+        if self.worker is None or self._cancel is None or self._cancel.is_set():
+            return
+        self._cancel.set()
+        self.stop_btn.setEnabled(False)
+        self.log.appendPlainText('stop requested')
+        self.progress_text.setText('stopping … (a stage that cannot be interrupted finishes first)')
 
     def _worker_finished(self):
         w = self.worker
@@ -1153,21 +1230,32 @@ class MainWindow:
         if w is not None:
             w.deleteLater()
 
-    def _run_done(self, ok, err):
+    def _run_done(self, status, err):
         # emitted from inside the thread: the QThread object must stay alive here (see _worker_finished)
         self.run_btn.setEnabled(True)
         self.force_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self._cancel = None
+        self._running_stage = None
+        self.progress_bar.setRange(0, 1); self.progress_bar.setValue(0)
+        self.progress_text.setText({'done': 'finished', 'stopped': 'stopped', 'failed': 'failed'}[status])
         self.refresh_status()
         cb = getattr(self, '_on_run_done', None)
         self._on_run_done = None
-        if not ok:
+        if status == 'stopped':
+            self.log.appendPlainText('run stopped (%s); Run again resumes there' % err)
+            self.status('run stopped')
+            if cb:
+                cb(status)
+            return
+        if status == 'failed':
             self.log.appendPlainText(err)
             self.error('the run failed; see the log')
             if cb:
-                cb(False)
+                cb(status)
             return
         if cb:
-            cb(True)
+            cb(status)
             return
         self.status('run finished')
         self._fill_results()

@@ -53,7 +53,7 @@ def run(case):
             shutil.rmtree(case.results_1d)
         console.info("OneDSolver: %s (seg_min_num %d, %d cycles)" % (exe, seg, s.cycles))
         try:
-            run_onedsolver(exe, case.oned_input, case.results_1d)
+            run_onedsolver(exe, case.oned_input, case.results_1d, cancel=case.cancel)
             console.info("%d result files" % len(result_files(case.results_1d)))
             return outputs(case)
         except OneDSolverError as e:

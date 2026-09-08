@@ -140,8 +140,8 @@ def _errors_pct(fractions, pressure, targets: Targets) -> Dict[str, float]:
 
 def tune(cfg: dict, outlet_names: Sequence[str], targets: Targets, t: np.ndarray, q: np.ndarray,
          cycle_duration: float, tolerance_pct: float = 5.0, max_iterations: int = 12,
-         rp_fraction: float = 0.09, cycles: int = 5, damping: float = 0.8, log=print):
-    """Returns (rcr, TuningReport)."""
+         rp_fraction: float = 0.09, cycles: int = 5, damping: float = 0.8, log=print, check=None):
+    """Returns (rcr, TuningReport). `check()` is called before every iteration (it may raise to stop)."""
     vmap = Z.VesselMap(cfg, outlet_names)
     missing = [c for c in outlet_names if c not in targets.flow_split]
     if missing:
@@ -160,6 +160,8 @@ def tune(cfg: dict, outlet_names: Sequence[str], targets: Targets, t: np.ndarray
     rcr = build_rcr(R, f, C, split)
 
     for it in range(1, max_iterations + 1):
+        if check is not None:
+            check()
         try:
             fractions, pressure = _measure(cfg, rcr, vmap, targets, cycle_duration, cycles)
             solves += 1

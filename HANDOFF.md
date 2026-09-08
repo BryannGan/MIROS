@@ -158,7 +158,7 @@ gitignored.
 | `miros/rom/`, `miros/rom_extract/` | vendored SimVascular; see the `VENDORED.md` in each for every change |
 | `miros/rom_model.py` | `build_rom_model()`: surface to 0D JSON and 1D input |
 | `miros/tuning/windkessel.py` | boundary condition tuning |
-| `miros/io/` | the only readers and writers for `rcrt.dat`, `.flow`, the 0D JSON, OneDSolver runs |
+| `miros/io/` | the only readers and writers for `rcrt.dat`, `.flow`, the 0D JSON, OneDSolver runs; `process.py` runs any external program streamed, logged and stoppable |
 | `miros/ui/` | console output, waveform editor, the window |
 | `miros/models.py` | the SeqSeg weight registry and downloader |
 | `miros/timestep.py` | the CFL-based samples-per-cycle recommendation |
@@ -296,15 +296,35 @@ never by number:
 - **Inflow**: the embedded matplotlib editor with 20 draggable control knots,
   heart rate, peak flow, samples per cycle with a CFL recommendation.
 - **Targets**: cap names, inlet, flow shares, pressure target and anchor.
-- **Run**: 0D only or 0D and 1D, optional volume projection, stage table, log.
+- **Run**: 0D only or 0D and 1D, optional volume projection, stage table,
+  progress bar, Stop button, log.
 - **Results**: 1D pressure or flow, on the wall or the centerline, time slider,
   cycle mean, per-outlet table.
+
+### Progress and Stop
+
+A stage reports where it is with `console.progress(done, total, text)`; the
+window installs a handler for the run (`console.set_progress_handler`) and
+draws the bar, a terminal gets a `\r` line, piped output a line per tenth.
+`console.progress(None)` clears it. Only the segment stage reports today.
+
+Stop is a `threading.Event` created by `start_run`, handed to `Case.run(cancel=)`
+and readable by every stage as `case.cancel`. The runner checks it between
+stages; `io/process.run_logged` checks it every half second and kills the
+program (SeqSeg, OneDSolver) as a whole process tree; the tuner checks it
+before each solve. Anything else finishes its stage first, and the button says
+so. A stopped stage records nothing in the manifest, so the next Run resumes
+there. `RunCancelled` (from `miros.case`) is the signal, and `on_done` callbacks
+receive `'done' | 'stopped' | 'failed'`, not a bool. Closing the window during
+a run offers Stop as well.
 
 Rules learned the hard way, all of which have regression tests:
 
 - **The worker thread must outlive its own `done` signal.** Emitting from inside
   the thread and dropping the reference gives `QThread: Destroyed while thread
   is still running` and an abort. Keep the object until Qt's `finished`.
+- **A subprocess reader thread prints through the redirected stdout too**, so
+  `_LineWriter` takes a lock; without it two threads share one line buffer.
 - **No stage may open a window off the main thread.** `console.set_interactive
   (False)` during GUI runs; the inflow stage checks it before opening the
   editor.
@@ -330,10 +350,11 @@ Rules learned the hard way, all of which have regression tests:
 ## 11. SeqSeg
 
 `stages/segment.py` runs it as a subprocess so torch and nnU-Net never load into
-our process:
+our process, through `io/process.run_logged`, so its output streams into the log
+as it is printed and Stop kills it:
 
 ```
-python -m seqseg.seqseg run single --image IMG --outdir work/seqseg
+python -u -m seqseg.seqseg run single --image IMG --outdir work/seqseg
     --model-folder .../nnUNetTrainer__nnUNetPlans__3d_fullres --train-dataset DATASET
     --config-name NAME_OR_PATH --unit cm|mm --scale S
     --max-n-steps N --max-n-branches N --max-n-steps-per-branch N
@@ -346,6 +367,17 @@ python -m seqseg.seqseg run single --image IMG --outdir work/seqseg
 
 The facts that cost time:
 
+- **SeqSeg's step counter is not on its stdout.** Unless the config's `DEBUG` is
+  true, `pipeline/classic.py` points `sys.stdout` at `out.txt` in its scratch
+  tree (`work/seqseg3d_fullres_<case>/out.txt`) for the whole trace, so the
+  pipe carries only nnU-Net's per-prediction tqdm bars, warnings, and the
+  opening and closing lines. `DEBUG: true` is no way out: it calls
+  `pdb.set_trace()` at `DEBUG_STEP` (63 in `global_aorta`). So `_Tracing` in
+  the segment stage tails `out.txt` for `*** Step number N ***` and counts
+  `Post Branches are` for the branch number; Python buffers that file, so the
+  counter moves every three or four steps. `-u` is passed so the lines that do
+  come down the pipe arrive when printed, and the tqdm bars are dropped from
+  the log (one per step, hundreds of them).
 - **SeqSeg 2.1's `global` config is missing `ADD_RADIUS`**, which its own tracer
   reads, so a run dies about a minute in with a `KeyError`. `global_debug` is
   the same. Each model in `models.py` names a working config (`global_aorta`,
@@ -362,6 +394,11 @@ The facts that cost time:
   `3d_fullres_<case>` appended. Both are cleared before a run.
 - **Its output surface is not clean.** The maintainer's CT gave 36 disconnected
   pieces and non-manifold edges on 2M points.
+- **Its post-trace phase can eat all the memory.** A 12-step trace of KDR12
+  with `extract_centerline` on wrote its surface, then grew to 23 GB in the
+  global centerline extraction and was OOM-killed three minutes later (exit
+  -9; the stage names that cause). The 797-step run of the same image
+  survived. Short test runs should switch the centerline off.
 - **Weights** are on Zenodo, CC-BY-4.0: aorta CT and MR in one 236 MB archive
   (record 15020477), coronary CT in a 3 MB one (record 19547894). `models.py`
   resolves a registry name in the model store before treating it as a path, so a
@@ -403,33 +440,35 @@ end areas equal to cap areas, and 0D flow splits reproducing the reference.
 From a systematic review of the clinician's path, image to results, roughly in
 the order I would take them.
 
-1. **Segmentation is a blind wait.** Its output goes to a log file, so the
-   window shows nothing for up to twenty minutes: no step counter, no estimate,
-   no way to tell slow from hung. Stream the subprocess output into the run log
-   with `Popen`, parse its step counter into a progress bar, and add a Stop
-   button. There is no cancel anywhere in the application today.
-2. **The Outlets review can be skipped.** Run on the Run step from a fresh image
+Done since the review: segmentation streams into the log with a step counter,
+rate and bound on the time left, and the Run step has a Stop button (section
+10, "Progress and Stop").
+
+1. **The Outlets review can be skipped.** Run on the Run step from a fresh image
    case segments and then clips with the automatic proposals, unseen. Gate the
    clip on reviewed cuts, or say so on the Run step.
-3. **Half the settings are invisible**, reachable only by editing `case.yaml`:
+2. **Half the settings are invisible**, reachable only by editing `case.yaml`:
    smoothing passes and pass band, remesh and edge size, outlet back-off,
    assembly threshold, blood density and viscosity, cardiac cycles, tuning
    tolerance and iterations, 1D element size and segments per branch.
-4. **No way to inspect or repair a segmentation.** Nothing reports disconnected
+3. **No way to inspect or repair a segmentation.** Nothing reports disconnected
    pieces or openings, or offers keep-largest-body, hole filling, or a smoothing
    preview. A Surface panel between Segment and Outlets is the natural home.
-5. **A cut cannot be added where no candidate was found.** Trimming at a chosen
+4. **A cut cannot be added where no candidate was found.** Trimming at a chosen
    level needs hand-edited YAML.
-6. **Nothing sanity-checks before a long run**: an implausible cap area, a flow
+5. **Nothing sanity-checks before a long run**: an implausible cap area, a flow
    split missing an outlet, a sample count under the CFL recommendation.
-7. **Redrawing is wasteful.** Every tick or nudge on the Outlets step rebuilds
+6. **Redrawing is wasteful.** Every tick or nudge on the Outlets step rebuilds
    the whole wall actor, seconds per click on 2M points. Draw the wall once.
-8. **Nothing decimates.** Full segmentation resolution is carried through
+7. **Nothing decimates.** Full segmentation resolution is carried through
    cutting, centerlines and meshing; about 200k points would speed the rest.
-9. **Two tabs are both numbered 1**, and the Model step still shows the
+8. **Two tabs are both numbered 1**, and the Model step still shows the
    surface-import form with a units dropdown that image cases ignore.
-10. **No report.** One page with the model, per-outlet pressures and flows, the
-    tuned boundary conditions and the waveform would finish the workflow.
+9. **No report.** One page with the model, per-outlet pressures and flows, the
+   tuned boundary conditions and the waveform would finish the workflow.
+10. **Only segmentation reports progress.** The cuts on a 2M-point surface
+    (87 s on KDR12), the tuner's solves and the 1D solve run behind a busy bar;
+    each has a natural counter (cuts done, iterations, solver time steps).
 
 ---
 
@@ -496,5 +535,7 @@ the order I would take them.
 
 `tests/manual/` holds the checks that need a window or a real segmentation: the
 surface case end to end, the Segment step with a real SeqSeg run, the Outlets
-step, seed picking under real Qt mouse events, and a slice benchmark. They read
-`MIROS_TUTORIAL` and `MIROS_IMAGE`; see `tests/manual/README.md`.
+step, seed picking under real Qt mouse events, Stop during a real segmentation,
+and a slice benchmark. They read `MIROS_TUTORIAL`, `MIROS_IMAGE` and
+`MIROS_CASE`; see `tests/manual/README.md`. The tutorial MR image is not on
+this machine any more; `smoke_stop.py` works from `~/miros_cases/KDR12`.
