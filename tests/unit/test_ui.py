@@ -133,6 +133,11 @@ def test_seed_picking_places_points_on_a_click_but_not_on_a_drag(qt_app, tmp_pat
     from qtpy import QtCore, QtGui, QtWidgets
     from miros.ui.app import MainWindow
 
+    import sys
+    if qt_app.platformName() == 'offscreen' and not (sys.platform.startswith('linux') and os.environ.get('DISPLAY')):
+        # VTK makes its own GL context for the 3D view; without a display server (Linux) or a real
+        # platform (macOS, Windows) a mouse press on the interactor is a segfault, not a skip
+        pytest.skip('the 3D view needs a display')
     w = MainWindow()                                  # with the 3D view: picking needs the render widget
     if not w.viewer.can_pick:
         pytest.skip('no render widget in this environment')
@@ -175,7 +180,7 @@ def test_segment_page_loads_a_typed_image_path(qt_app, tmp_path):
     grid.point_data['scan'] = np.arange(grid.n_points, dtype=np.int16)
     f = tmp_path / 'scan.vti'
     grid.save(str(f))
-    w = MainWindow()
+    w = MainWindow(offscreen=True)                    # the page, not the 3D view
     errors = []
     w.error = errors.append
     w.segment.image_edit.setText(str(f))
