@@ -325,6 +325,13 @@ Rules learned the hard way, all of which have regression tests:
   is still running` and an abort. Keep the object until Qt's `finished`.
 - **A subprocess reader thread prints through the redirected stdout too**, so
   `_LineWriter` takes a lock; without it two threads share one line buffer.
+- **A `QLabel` that cannot wrap sets the window's minimum width.** A tab
+  widget's minimum is its widest page, and a main window cannot shrink below
+  it, so one long instruction label made the window 1737 px wide and, on a
+  scaled display, wider than the screen and impossible to resize. Every
+  sentence-length label gets `setWordWrap(True)`, rows of many controls are
+  split, and the window opens at no more than 90% of the screen.
+  `test_window_fits_a_laptop_screen` holds every page under 900 px.
 - **No stage may open a window off the main thread.** `console.set_interactive
   (False)` during GUI runs; the inflow stage checks it before opening the
   editor.

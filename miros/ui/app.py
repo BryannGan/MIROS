@@ -524,7 +524,14 @@ class MainWindow:
         self._build_run_tab()
         self._build_results_tab()
         self._enable_tabs(False)
-        self.win.resize(1400, 800)
+        # open at up to 1400x800 logical pixels, but never larger than the screen: a window wider
+        # than the screen has its edges off screen and cannot be grabbed to resize
+        screen = QtWidgets.QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else None
+        if avail is not None and avail.width() > 0:
+            self.win.resize(min(1400, int(avail.width() * 0.9)), min(800, int(avail.height() * 0.85)))
+        else:
+            self.win.resize(1400, 800)
         self.win.statusBar()
         self.tabs.setCurrentIndex(self.TAB_MODEL)
 
@@ -564,7 +571,9 @@ class MainWindow:
         W = self.W
         page = W.QWidget()
         lay = W.QVBoxLayout(page)
-        lay.addWidget(W.QLabel('<b>Start from a clipped model</b><br>The surface must be open at the inlet and at every outlet.'))
+        head = W.QLabel('<b>Start from a clipped model</b><br>The surface must be open at the inlet and at every outlet.')
+        head.setWordWrap(True)
+        lay.addWidget(head)
         form = W.QFormLayout()
         self.surface_edit = W.QLineEdit()
         b1 = W.QPushButton('Browse…'); b1.clicked.connect(self._browse_surface)
@@ -590,6 +599,7 @@ class MainWindow:
         lay.addWidget(self.model_info)
         lay.addStretch()
         self.model_next_hint = W.QLabel(''); self.model_next_hint.setStyleSheet('color: #9a6700')
+        self.model_next_hint.setWordWrap(True)
         lay.addWidget(self.model_next_hint)
         self.model_next = self._next_button(lay)
         self.model_next.setEnabled(False)
@@ -718,7 +728,9 @@ class MainWindow:
         W = self.W
         page = W.QWidget()
         lay = W.QVBoxLayout(page)
-        lay.addWidget(W.QLabel('<b>One cardiac cycle of inflow</b> — drag the red points; first and last are tied.'))
+        head = W.QLabel('<b>One cardiac cycle of inflow</b> — drag the red points; first and last are tied.')
+        head.setWordWrap(True)
+        lay.addWidget(head)
         import matplotlib
         matplotlib.use('QtAgg', force=True)
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -888,7 +900,9 @@ class MainWindow:
         W, QtCore = self.W, self.QtCore
         page = W.QWidget()
         lay = W.QVBoxLayout(page)
-        lay.addWidget(W.QLabel('<b>Caps</b> — click one in the 3D view or in the table. Name them, pick the inlet, share the flow.'))
+        head = W.QLabel('<b>Caps</b> — click one in the 3D view or in the table. Name them, pick the inlet, share the flow.')
+        head.setWordWrap(True)
+        lay.addWidget(head)
         self.table = W.QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(['name', 'area [cm²]', 'inlet', 'flow share [%]'])
         self.table.verticalHeader().setVisible(False)
@@ -1069,8 +1083,10 @@ class MainWindow:
         W = self.W
         page = W.QWidget()
         lay = W.QVBoxLayout(page)
-        lay.addWidget(W.QLabel('<b>Run</b> — press Run. Only the stages whose inputs changed since the last run are '
-                               'executed (the table shows which); the rest are reused.'))
+        head = W.QLabel('<b>Run</b> — press Run. Only the stages whose inputs changed since the last run are '
+                        'executed (the table shows which); the rest are reused.')
+        head.setWordWrap(True)
+        lay.addWidget(head)
         self.stage_table = W.QTableWidget(len(STAGES), 3)
         self.stage_table.setHorizontalHeaderLabels(['stage', 'state', 'detail'])
         self.stage_table.verticalHeader().setVisible(False)

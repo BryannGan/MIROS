@@ -188,6 +188,20 @@ def test_segment_page_loads_a_typed_image_path(qt_app, tmp_path):
     assert errors and 'no such file' in errors[-1]
 
 
+def test_window_fits_a_laptop_screen(qt_app):
+    """No page may set a minimum width beyond a laptop screen (a label that cannot wrap did: 1737 px)."""
+    from miros.ui.app import MainWindow
+    w = MainWindow(offscreen=True)
+    w.win.show(); qt_app.processEvents()
+    hint = w.win.minimumSizeHint()
+    assert hint.width() < 900 and hint.height() < 650, (hint.width(), hint.height())
+    for i in range(w.tabs.count()):
+        page = w.tabs.widget(i).minimumSizeHint()
+        assert page.width() < 900, (w.tabs.tabText(i), page.width())
+    avail = qt_app.primaryScreen().availableGeometry()
+    assert w.win.width() <= avail.width() and w.win.height() <= avail.height()
+
+
 def test_stop_button_ends_the_run_and_shows_progress(surface_path, tmp_path, qt_app, monkeypatch):
     """Progress reported by a stage reaches the bar; Stop ends the worker, which is released cleanly."""
     import threading

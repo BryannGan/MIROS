@@ -70,12 +70,17 @@ class OutletsPage:
         self.box_l.setToolTip('How far the box reaches past the cut. It has to hold the vessel end; if it '
                               'does not, the cut grows it and says so.')
         self.box_l.valueChanged.connect(lambda v: self.set_box('box_length', v))
-        for w in (self.move_in, self.move_out, self.flip, QtWidgets.QLabel('radius [cm]'), self.radius,
-                  QtWidgets.QLabel('box half-width [cm]'), self.box_w,
-                  QtWidgets.QLabel('box length [cm]'), self.box_l):
+        for w in (self.move_in, self.move_out, self.flip):
             row.addWidget(w)
         row.addStretch()
         lay.addLayout(row)
+        row_size = QtWidgets.QHBoxLayout()            # its own line: with the buttons it was 880 px wide
+        for w in (QtWidgets.QLabel('radius [cm]'), self.radius,
+                  QtWidgets.QLabel('box half-width [cm]'), self.box_w,
+                  QtWidgets.QLabel('box length [cm]'), self.box_l):
+            row_size.addWidget(w)
+        row_size.addStretch()
+        lay.addLayout(row_size)
 
         row2 = QtWidgets.QHBoxLayout()
         self.count = QtWidgets.QLabel('')

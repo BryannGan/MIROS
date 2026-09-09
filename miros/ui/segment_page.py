@@ -31,8 +31,10 @@ class SegmentPage:
         page = QtWidgets.QWidget()
         self.widget = page
         lay = QtWidgets.QVBoxLayout(page)
-        lay.addWidget(QtWidgets.QLabel('<b>Start from an image</b> — SeqSeg traces the vessel tree from seeds; '
-                                       'MIROS opens the outlets and continues from there.'))
+        head = QtWidgets.QLabel('<b>Start from an image</b> — SeqSeg traces the vessel tree from seeds; '
+                                'MIROS opens the outlets and continues from there.')
+        head.setWordWrap(True)                # a label that cannot wrap sets the window's minimum width
+        lay.addWidget(head)
         form = QtWidgets.QFormLayout()
         self.image_edit = QtWidgets.QLineEdit()
         self.image_edit.setPlaceholderText('path to the volume, or use Browse')
@@ -71,19 +73,19 @@ class SegmentPage:
                                        'from it, which is more reliable than reading them off the surface. '
                                        'Costs about half a minute.')
         self.centerline_box.setChecked(True)
-        r5 = QtWidgets.QHBoxLayout()
-        for label, wdg, hint in (('config', self.tracing, ''),
-                                 ('total steps', self.steps, 'aorta root to iliacs ≈ 800;  arch only ≈ 200'),
-                                 ('branches', self.branches, 'aorta + arch vessels + renals ≈ 10'),
-                                 ('steps per branch', self.steps_branch, 'a 10 cm vessel of 1 cm radius ≈ 20')):
-            r5.addWidget(QtWidgets.QLabel(label)); r5.addWidget(wdg)
-            if hint:
-                h = QtWidgets.QLabel('(%s)' % hint); h.setStyleSheet('color: gray'); r5.addWidget(h)
         self.edit_cfg = QtWidgets.QPushButton('all settings…')
         self.edit_cfg.setToolTip('Open the whole tracing config: every SeqSeg setting, saved as a copy in the case')
         self.edit_cfg.clicked.connect(self.edit_config)
-        r5.addWidget(self.centerline_box); r5.addWidget(self.edit_cfg); r5.addStretch()
-        form.addRow('tracing', r5)
+        r5 = QtWidgets.QHBoxLayout()
+        r5.addWidget(self.tracing, 1); r5.addWidget(self.centerline_box); r5.addWidget(self.edit_cfg)
+        form.addRow('tracing config', r5)
+        for label, wdg, hint in (('total steps', self.steps, 'aorta root to iliacs ≈ 800;  arch only ≈ 200'),
+                                 ('branches', self.branches, 'aorta + arch vessels + renals ≈ 10'),
+                                 ('steps per branch', self.steps_branch, 'a 10 cm vessel of 1 cm radius ≈ 20')):
+            r = QtWidgets.QHBoxLayout()               # one row each: all on one line was 1700 px wide
+            r.addWidget(wdg)
+            h = QtWidgets.QLabel('(%s)' % hint); h.setStyleSheet('color: gray'); r.addWidget(h); r.addStretch()
+            form.addRow(label, r)
         self.case_edit = QtWidgets.QLineEdit()
         b2 = QtWidgets.QPushButton('Browse…'); b2.clicked.connect(self._browse_case_dir)
         r4 = QtWidgets.QHBoxLayout(); r4.addWidget(self.case_edit); r4.addWidget(b2)
@@ -94,10 +96,12 @@ class SegmentPage:
         row.addWidget(self.create_btn); row.addStretch()
         lay.addLayout(row)
 
-        lay.addWidget(QtWidgets.QLabel('<b>Seeds</b> — click a slice for the start point, then click again a '
-                                       'centimetre or so further along the vessel to say which way to trace. '
-                                       'Put the first seed where the inflow enters, for example the aortic root. '
-                                       'Use the sliders in the 3D view to move the slices.'))
+        seeds_head = QtWidgets.QLabel('<b>Seeds</b> — click a slice for the start point, then click again a '
+                                      'centimetre or so further along the vessel to say which way to trace. '
+                                      'Put the first seed where the inflow enters, for example the aortic root. '
+                                      'Use the sliders in the 3D view to move the slices.')
+        seeds_head.setWordWrap(True)
+        lay.addWidget(seeds_head)
         srow = QtWidgets.QHBoxLayout()
         srow.addWidget(QtWidgets.QLabel('vessel radius at the seed'))
         self.radius = QtWidgets.QDoubleSpinBox(); self.radius.setRange(0.01, 1000); self.radius.setDecimals(2); self.radius.setValue(1.0)
@@ -105,14 +109,16 @@ class SegmentPage:
         self._units = self.units.currentText()
         self.radius_unit = QtWidgets.QLabel('[%s]' % self._units)
         srow.addWidget(self.radius_unit)
-        srow.addWidget(QtWidgets.QLabel('— in image coordinates, so it follows the image units above '
-                                        '(an adult aorta ≈ 1.5 cm, a renal artery ≈ 0.25 cm)'))
         srow.addStretch()
         self.pick_btn = QtWidgets.QPushButton('Add seed by clicking'); self.pick_btn.setCheckable(True)  # noqa: E501
         self.pick_btn.toggled.connect(self._toggle_pick)
         self.pick_btn.setEnabled(False)
         srow.addWidget(self.pick_btn)
         lay.addLayout(srow)
+        radius_hint = QtWidgets.QLabel('The radius is in image coordinates, so it follows the image units above '
+                                       '(an adult aorta ≈ 1.5 cm, a renal artery ≈ 0.25 cm).')
+        radius_hint.setWordWrap(True); radius_hint.setStyleSheet('color: gray')
+        lay.addWidget(radius_hint)
         self.seed_table = QtWidgets.QTableWidget(0, 4)
         self.seed_table.setHorizontalHeaderLabels(['point', 'direction', 'radius', ''])
         self.seed_table.verticalHeader().setVisible(False)
