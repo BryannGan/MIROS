@@ -34,6 +34,28 @@ def test_run_logged_polls_while_running_and_returns_the_exit_code(tmp_path):
     assert rc == 3 and len(polls) >= 3
 
 
+def _process_gone(pid: int, wait: float = 5.0) -> bool:
+    """True once `pid` is no longer running. A zombie counts as gone (Linux shows it in /proc;
+    elsewhere init reaps it within the wait)."""
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        if os.path.exists('/proc'):
+            try:
+                with open('/proc/%d/status' % pid) as f:
+                    if 'zombie' in f.read().lower():
+                        return True
+            except OSError:                         # vanished between the two checks
+                return True
+        time.sleep(0.1)
+    return False
+
+
 def test_stop_kills_the_program_and_its_children(tmp_path):
     """Setting the event ends the run within the grace period, and the process tree is gone."""
     pidfile = tmp_path / 'pid'
@@ -48,18 +70,10 @@ def test_stop_kills_the_program_and_its_children(tmp_path):
         run_logged([sys.executable, '-c', code], tmp_path / 'p.log',
                    on_line=lambda s: ev.set() if s == 'started' else None, cancel=ev, poll_interval=0.05)
     assert time.time() - t0 < 15
-    if os.name != 'nt':
+    if os.name != 'nt':                             # kill(pid, 0) means something else on Windows
         pids = [int(p) for p in pidfile.read_text().split()]
-        time.sleep(0.2)
         for pid in pids:
-            try:
-                os.kill(pid, 0)
-                alive = True
-                # a zombie answers kill(0): make sure it is not merely unreaped
-                alive = 'zombie' not in open('/proc/%d/status' % pid).read().lower() if os.path.exists('/proc') else alive
-            except ProcessLookupError:
-                alive = False
-            assert not alive, 'process %d survived the stop' % pid
+            assert _process_gone(pid), 'process %d survived the stop' % pid
 
 
 def test_kill_tree_on_a_finished_process_is_harmless(tmp_path):

@@ -190,16 +190,29 @@ def test_segment_page_loads_a_typed_image_path(qt_app, tmp_path):
 
 def test_window_fits_a_laptop_screen(qt_app):
     """No page may set a minimum width beyond a laptop screen (a label that cannot wrap did: 1737 px)."""
+    from qtpy import QtWidgets
     from miros.ui.app import MainWindow
     w = MainWindow(offscreen=True)
     w.win.show(); qt_app.processEvents()
+
+    def widest(widget, n=5):                                   # what sets a page's minimum, for the message
+        rows = []
+        for c in widget.findChildren(QtWidgets.QWidget):
+            text = c.text()[:50] if hasattr(c, 'text') and isinstance(c.text(), str) else ''
+            rows.append((c.minimumSizeHint().width(), type(c).__name__, text))
+        return sorted(rows, reverse=True)[:n]
+    pages = {w.tabs.tabText(i): w.tabs.widget(i) for i in range(w.tabs.count())}
+    report = '; '.join('%s %d' % (name, p.minimumSizeHint().width()) for name, p in pages.items())
+    big = max(pages.values(), key=lambda p: p.minimumSizeHint().width())
+    report += ' | widest widgets: %s' % widest(big)
     hint = w.win.minimumSizeHint()
-    assert hint.width() < 900 and hint.height() < 650, (hint.width(), hint.height())
-    for i in range(w.tabs.count()):
-        page = w.tabs.widget(i).minimumSizeHint()
-        assert page.width() < 900, (w.tabs.tabText(i), page.width())
+    assert hint.width() < 900 and hint.height() < 650, ((hint.width(), hint.height()), report)
+    for name, p in pages.items():
+        assert p.minimumSizeHint().width() < 900, (name, report)
+    # opened no larger than the screen, unless the minimum itself is larger (a tiny offscreen screen)
     avail = qt_app.primaryScreen().availableGeometry()
-    assert w.win.width() <= avail.width() and w.win.height() <= avail.height()
+    assert w.win.width() <= max(avail.width(), hint.width()), (w.win.width(), avail.width(), report)
+    assert w.win.height() <= max(avail.height(), hint.height()), (w.win.height(), avail.height(), report)
 
 
 def test_stop_button_ends_the_run_and_shows_progress(surface_path, tmp_path, qt_app, monkeypatch):

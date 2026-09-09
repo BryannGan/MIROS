@@ -32,7 +32,7 @@ def run_onedsolver(executable, input_file, workdir, log_name: str = 'onedsolver.
                       cancel=cancel, timeout=timeout, name='OneDSolver')
     results = list(workdir.glob('*_flow.dat'))
     if code != 0 or not results:
-        tail = log.read_text(errors='replace').splitlines()[-25:]
+        tail = log.read_text(encoding='utf-8', errors='replace').splitlines()[-25:]
         raise OneDSolverError("OneDSolver failed (exit %d, %d result files). Log tail:\n%s" %
                               (code, len(results), '\n'.join(tail)))
     return log

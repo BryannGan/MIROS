@@ -43,7 +43,8 @@ def write_rcrt(rcr: RCR, outlet_names: Sequence[str], path) -> None:
     for name in outlet_names:
         p = rcr.get(name, DEFAULT_RCR)
         lines += ['2', name, repr(float(p['Rp'])), repr(float(p['C'])), repr(float(p['Rd'])), '0.0 0.0', '1.0 0.0']
-    Path(path).write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:     # Path.write_text(newline=) needs 3.10
+        f.write('\n'.join(lines) + '\n')
 
 
 def write_default_rcrt(outlet_names: Sequence[str], path) -> None:

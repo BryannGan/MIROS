@@ -376,4 +376,5 @@ def write_template(path, name='case', surface='input/surface.vtp', units='cm', i
                            onedsolver=onedsolver if onedsolver else 'null',
                            image=image if image else 'null', image_units=image_units, seg_model=seg_model,
                            seeds=seeds_txt, smoothing=smoothing)
-    Path(path).write_text(text, encoding='utf-8', newline='\n')
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:     # Path.write_text(newline=) needs 3.10
+        f.write(text)

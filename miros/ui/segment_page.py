@@ -164,13 +164,13 @@ class SegmentPage:
             return self.main.error('create the case first: the edited settings are saved inside it')
         own = self.main.case.dir / 'input' / 'seqseg_config.yaml'
         if own.exists():
-            text, source = own.read_text(), str(own)
+            text, source = own.read_text(encoding='utf-8'), str(own)
         else:
             name = self.tracing.currentData() or MODELS.get(self.model.currentData(), {}).get('config', '')
             shipped = _seqseg_configs().get(name)
             if shipped is None:
                 return self.main.error('cannot find the config %r that SeqSeg ships' % name)
-            text, source = shipped.read_text(), '%s (SeqSeg\'s own)' % name
+            text, source = shipped.read_text(encoding='utf-8'), '%s (SeqSeg\'s own)' % name
         W = self.W
         dlg = W.QDialog(self.main.win)
         dlg.setWindowTitle('SeqSeg tracing settings')

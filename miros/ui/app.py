@@ -508,6 +508,7 @@ class MainWindow:
         if self.viewer.widget is not None:
             split.addWidget(self.viewer.widget)
         self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setUsesScrollButtons(True)    # macOS style would otherwise make the tab bar as wide as all seven tabs
         split.addWidget(self.tabs)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)

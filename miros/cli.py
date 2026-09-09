@@ -61,6 +61,7 @@ def _case_relative(path: Path, case_dir: Path) -> str:
         rel = os.path.relpath(path, case_dir)
     except ValueError:                       # Windows: different drives have no relative path
         return str(path)
+    rel = rel.replace(os.sep, '/')           # forward slashes work on every OS, so the case moves between them
     return rel if rel.count('..') <= 2 else str(path)
 
 

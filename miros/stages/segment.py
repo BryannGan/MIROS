@@ -100,7 +100,7 @@ def _config_name(case) -> str:
     keys = {}
     for n, path in available.items():
         try:
-            keys[n] = set(yaml.safe_load(path.read_text(errors='replace')) or {})
+            keys[n] = set(yaml.safe_load(path.read_text(encoding='utf-8', errors='replace')) or {})
         except Exception:                                # noqa: BLE001 - unreadable config
             keys[n] = set()
     complete = max((k for n, k in keys.items() if n != name), key=len, default=set())   # a full config's settings
@@ -327,7 +327,7 @@ def run(case):
     if tracing.step >= 0:
         console.info('traced %d steps on %d branch(es) in %.0f s' % (tracing.step + 1, tracing.branch, time.time() - t0))
     if code != 0:
-        tail = log.read_text(errors='replace').splitlines()[-25:]
+        tail = log.read_text(encoding='utf-8', errors='replace').splitlines()[-25:]
         why = ''
         if code == -9:
             why = (" Exit -9 means the process was killed, which on Linux is usually the kernel running out "
