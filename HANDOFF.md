@@ -45,6 +45,36 @@ QT_QPA_PLATFORM=offscreen /home/bg2881/miniconda3/envs/MIROS/bin/python -m pytes
 
 `set -o pipefail` whenever you pipe a test command, or a failure reads as a pass.
 
+### The other two operating systems
+
+This machine is Linux; Windows and macOS are covered by `.github/workflows/
+ci.yml` on every push to main and every pull request: ubuntu, windows and
+macos runners on Python 3.10 and 3.12 (3.11 on ubuntu) install `.[dev]` and
+run the unit tests with the window offscreen, the integration tests, and the
+CLI from the example surface to the 0D model. Neither pysvzerod nor OneDSolver
+is installed there, so the tests that solve skip. `gh run list` and `gh run
+view --job ID --log` (or `gh api repos/BryannGan/MIROS/actions/jobs/ID/logs`
+when the former is empty) read the results from here. What the matrix taught:
+
+- **The 3D view needs a display, not just Qt.** VTK makes its own GL context;
+  under the `offscreen` platform the interactor exists but a mouse event on it
+  is a segfault on all three OSes. The seed-picking test skips without a
+  display, and Linux CI runs it under `xvfb-run`. Locally it works because an
+  X server is up even when Qt is offscreen.
+- **`PYVISTA_OFF_SCREEN=true` closes the plotter** the window draws into. Never
+  set it for the window.
+- **Windows draws twice as wide.** The offscreen font on the Windows runner is
+  about 12 px a character against 6.3 on Linux, so widget minimums double.
+  Size tests measure in characters of the platform font, never in pixels.
+- **macOS makes the tab bar as wide as all its tabs** unless
+  `setUsesScrollButtons(True)`.
+- **Python 3.9 is out.** Its last vtk and pyvista wheels lack
+  `extract_surface(algorithm=)` and crash inside pyvistaqt; `requires-python`
+  is 3.10. `Path.write_text(newline=)` is 3.10 too, so the writers use
+  `open()`.
+- Every text read passes `encoding='utf-8'` (Windows defaults to cp1252) and
+  every text write `newline='\n'`. `_case_relative` writes forward slashes.
+
 ---
 
 ## 3. Commands

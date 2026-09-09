@@ -43,7 +43,8 @@ Case directory: `case.yaml`, `work/` (intermediate files), `results/0D`, `result
 - Outlet ↔ vessel mapping always comes from the 0D JSON (`io/zerod.VesselMap`), never from vessel names or sort order.
 - Units: geometry in cm, flow mL/s, pressure dyn/cm² internally, mmHg at every user-facing point (`io/zerod.MMHG_TO_CGS`).
 - File formats live in `miros/io`; nothing else hand-writes `rcrt.dat` or the inflow file.
-- Do not add SimVascular, vmtk, or conda-only dependencies; everything must be pip-installable on all three OSes.
+- Do not add SimVascular, vmtk, or conda-only dependencies; everything must be pip-installable on all three OSes, Python 3.10 to 3.12. `.github/workflows/ci.yml` proves it on every push to main: unit tests with the window offscreen, the integration tests (solver ones skip), and the CLI to the 0D model, on ubuntu, macOS and Windows.
+- Text files are opened with `encoding='utf-8'` and written with `newline='\n'`; paths written into `case.yaml` use forward slashes; anything a subprocess needs goes through `io/process.run_logged`.
 - `python -m pytest tests/unit -q` before committing; the full suite (`pytest`) takes ~2 minutes with OneDSolver present.
 
 ## Plan and history
