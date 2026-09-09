@@ -18,6 +18,7 @@ import pyvista as pv
 import vtk
 
 from . import caps as C
+from .clip import surface_of
 from .remesh import remesh
 
 
@@ -52,7 +53,7 @@ def volume_mesh(surface: vtk.vtkPolyData, edge_size: Optional[float] = None,
     # 1-based volume node ids, as SimVascular writes them: the result projection
     # reads GlobalNodeID - 1 as an index into the volume mesh
     grid.point_data['GlobalNodeID'] = np.arange(1, grid.n_points + 1, dtype=np.int32)
-    exterior = grid.extract_surface(algorithm='dataset_surface')   # carries the volume's GlobalNodeID; never renumber it
+    exterior = surface_of(grid)                  # carries the volume's GlobalNodeID; never renumber it
     return grid, exterior
 
 

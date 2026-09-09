@@ -7,7 +7,7 @@ name = "miros"
 version = "0.2.0.dev0"
 description = "Medical Image to Patient-Specific Reduced-Order Hemodynamic Model Simulation in Minutes"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"           # 3.9 is end of life; its last vtk/pyvista wheels crash under Qt
 license = { text = "MIT" }
 authors = [{ name = "Bryan Gan" }]
 dependencies = [

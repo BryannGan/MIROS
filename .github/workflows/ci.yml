@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 # Everything that needs no solver, on the three operating systems and at both ends
-# of the supported Python range: the unit tests including the window (offscreen),
+# of the supported Python range (3.10 to 3.12): the unit tests including the window (offscreen),
 # the geometry and ROM builder against the SimVascular reference, and the CLI from
 # a surface to the 0D model. pysvzerod and OneDSolver are not installed here, so
 # the tests that solve are skipped.
@@ -18,13 +18,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.10", "3.12"]
         include:
           - os: ubuntu-latest
             python-version: "3.11"
     env:
       QT_QPA_PLATFORM: offscreen
-      PYVISTA_OFF_SCREEN: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

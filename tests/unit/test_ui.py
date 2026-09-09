@@ -205,10 +205,15 @@ def test_window_fits_a_laptop_screen(qt_app):
     report = '; '.join('%s %d' % (name, p.minimumSizeHint().width()) for name, p in pages.items())
     big = max(pages.values(), key=lambda p: p.minimumSizeHint().width())
     report += ' | widest widgets: %s' % widest(big)
+    # in characters of the platform's font, so a wide font (Windows offscreen: 12 px a character) is not a failure;
+    # the label that could not wrap was 250 characters, a 1366-px laptop at 7 px a character is about 195
+    from qtpy import QtGui
+    fm = QtGui.QFontMetrics(qt_app.font())
+    cw, lh = fm.horizontalAdvance('x' * 100) / 100.0, fm.lineSpacing()
     hint = w.win.minimumSizeHint()
-    assert hint.width() < 900 and hint.height() < 650, ((hint.width(), hint.height()), report)
+    assert hint.width() < 140 * cw and hint.height() < 45 * lh, ((hint.width(), hint.height()), (cw, lh), report)
     for name, p in pages.items():
-        assert p.minimumSizeHint().width() < 900, (name, report)
+        assert p.minimumSizeHint().width() < 140 * cw, (name, (cw, lh), report)
     # opened no larger than the screen, unless the minimum itself is larger (a tiny offscreen screen)
     avail = qt_app.primaryScreen().availableGeometry()
     assert w.win.width() <= max(avail.width(), hint.width()), (w.win.width(), avail.width(), report)

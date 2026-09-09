@@ -19,6 +19,19 @@ import numpy as np
 import vtk
 
 
+def surface_of(dataset):
+    """
+    The surface of an extracted piece as polydata, by vtkDataSetSurfaceFilter
+    whatever the installed pyvista: from 0.47 the filter is chosen by
+    algorithm= and the default is moving to vtkGeometryFilter, before that
+    there is no such keyword and vtkDataSetSurfaceFilter is what runs.
+    """
+    try:
+        return dataset.extract_surface(algorithm='dataset_surface')
+    except TypeError:
+        return dataset.extract_surface()
+
+
 BOX_WIDTH = 1.6          # half-width of a cut box, in vessel radii
 BOX_LENGTH = 3.0         # how far it reaches past the plane, in vessel radii
 
@@ -89,7 +102,7 @@ def triangles_only(mesh):
     n_before = mesh.n_verts + mesh.n_lines
     if n_before or mesh.n_strips:
         keep = np.arange(n_before, n_before + mesh.n_faces_strict, dtype=np.int64)
-        mesh = mesh.extract_cells(keep).extract_surface(algorithm='dataset_surface')
+        mesh = surface_of(mesh.extract_cells(keep))
     return mesh
 
 
@@ -141,9 +154,8 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict],
             near = np.where(np.all((cell_hi >= lo) & (cell_lo <= hi), axis=1))[0]
             if len(near) == 0:
                 return None, 0, False
-            local = out.extract_cells(near).extract_surface(algorithm='dataset_surface')
-            rest = out.extract_cells(np.setdiff1d(np.arange(out.n_cells), near)).extract_surface(
-                algorithm='dataset_surface')
+            local = surface_of(out.extract_cells(near))
+            rest = surface_of(out.extract_cells(np.setdiff1d(np.arange(out.n_cells), near)))
             clipper = vtk.vtkClipPolyData()
             clipper.SetInputData(local)
             clipper.SetClipFunction(box_planes(o, direction, half_width, grown))
@@ -157,10 +169,8 @@ def clip_with_planes(surface: vtk.vtkPolyData, planes: Sequence[Dict],
             inside = inside.connectivity('all')
             region = np.asarray(inside.cell_data['RegionId'])
             take = int(region[int(inside.find_closest_cell(o + 0.25 * r * direction))])
-            gone = inside.extract_cells(np.where(region == take)[0]).extract_surface(
-                algorithm='dataset_surface')
-            keep_inside = inside.extract_cells(np.where(region != take)[0]).extract_surface(
-                algorithm='dataset_surface')
+            gone = surface_of(inside.extract_cells(np.where(region == take)[0]))
+            keep_inside = surface_of(inside.extract_cells(np.where(region != take)[0]))
             fits = bool(((gone.points - o) @ direction).max() <= 0.98 * grown) if gone.n_points else False
             merged = triangles_only(rest.merge([outside, keep_inside]).clean()) if gone.n_cells else None
             return merged, float(gone.area), fits
