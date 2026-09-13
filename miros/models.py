@@ -37,9 +37,7 @@ MODELS: Dict[str, dict] = {
 TRAINER = 'nnUNetTrainer__nnUNetPlans__3d_fullres'
 
 
-def models_dir() -> Path:
-    d = os.environ.get('MIROS_MODELS_DIR')
-    return Path(d).expanduser() if d else Path.home() / '.miros' / 'models'
+from .paths import models_dir  # noqa: E402,F401 - ~/.miros/models, or MIROS_MODELS_DIR
 
 
 def download_url(name: str) -> str:

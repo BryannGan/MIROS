@@ -18,14 +18,20 @@ _KNOWN_DIRS = {
 
 def find_onedsolver(configured: Optional[str] = None) -> Optional[str]:
     """
-    Order: explicit path from case.yaml -> MIROS_ONEDSOLVER -> PATH -> known
+    Order: explicit path from case.yaml -> MIROS_ONEDSOLVER -> what
+    `miros install onedsolver` fetched (~/.miros/bin) -> PATH -> known
     install directories for this OS. Returns a path or None.
     """
+    from .paths import bin_dir
     for p in (configured, os.environ.get('MIROS_ONEDSOLVER')):
         if p:
             p = os.path.expanduser(p)
             if Path(p).is_file():
                 return p
+    for name in _CANDIDATES:
+        p = bin_dir() / name
+        if p.is_file():
+            return str(p)
     for name in _CANDIDATES:
         w = shutil.which(name)
         if w:

@@ -1,0 +1,103 @@
+name: build-solvers
+
+# Compiles SimVascular's svOneDSolver executable and pysvzerod (svZeroDSolver) wheels
+# on GitHub's Linux, macOS and Windows runners and attaches them to this repository's
+# release tagged `solvers`, where `miros install onedsolver` and `miros install pysvzerod`
+# fetch what fits the machine. Run it by hand (Actions -> build-solvers -> Run workflow)
+# whenever upstream moves.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ZEROD: git+https://github.com/simvascular/svZeroDSolver.git
+
+jobs:
+  onedsolver:
+    name: OneDSolver ${{ matrix.key }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, key: linux-x86_64 }     # an older glibc, so the binary runs on more distributions
+          - { os: macos-latest, key: macos-arm64 }
+          - { os: windows-latest, key: windows-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: SimVascular/svOneDSolver
+          path: src
+      - name: Build
+        shell: bash
+        run: |
+          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_UNIT_TEST=OFF -DENABLE_INTERFACE_LIBRARY=OFF
+          cmake --build build --config Release --parallel 3
+          mkdir -p out
+          exe=$(find build/bin -type f \( -name OneDSolver -o -name OneDSolver.exe \) | head -1)
+          echo "built $exe"
+          if [ "$RUNNER_OS" = "Windows" ]; then cp "$exe" out/OneDSolver-${{ matrix.key }}.exe; else cp "$exe" out/OneDSolver-${{ matrix.key }}; fi
+          cp src/LICENSE.txt out/svOneDSolver-LICENSE.txt
+          ls -la out
+      - name: Runs
+        shell: bash
+        run: out/OneDSolver-* || true        # without an input file it prints its usage; the point is that it starts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onedsolver-${{ matrix.key }}
+          path: out/*
+
+  pysvzerod:
+    name: pysvzerod ${{ matrix.os }} py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+        python: ["3.10", "3.11", "3.12"]
+    env:
+      # svZeroDSolver's own CI: Eigen's optional Fortran probe otherwise finds an
+      # incompatible gfortran on the Windows runner and fails to link
+      FC: ${{ startsWith(matrix.os, 'windows') && 'none' || '' }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build the wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip wheel --no-deps -w dist "$ZEROD"
+          ls -la dist
+      - name: Install and import it
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl
+          python -c "import pysvzerod, sys; print('pysvzerod imports on', sys.platform, sys.version.split()[0])"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pysvzerod-${{ matrix.os }}-py${{ matrix.python }}
+          path: dist/*.whl
+
+  release:
+    name: attach to the `solvers` release
+    needs: [onedsolver, pysvzerod]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la files
+          gh release view solvers >/dev/null 2>&1 || gh release create solvers --latest=false --title "Prebuilt solvers" \
+            --notes "svOneDSolver executables and pysvzerod (svZeroDSolver) wheels, compiled from SimVascular's sources by the build-solvers workflow. \`miros install onedsolver\` and \`miros install pysvzerod\` fetch the one that fits the machine; see docs/install.md."
+          gh release upload solvers files/* --clobber
+          echo "assets now:"; gh release view solvers --json assets --jq '.assets[] | .name + "  " + (.size|tostring)'

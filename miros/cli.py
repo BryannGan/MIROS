@@ -2,6 +2,7 @@
 miros — command line.
 
     miros doctor                     check solvers, Python dependencies and downloaded models
+    miros install all|pysvzerod|onedsolver|seqseg   fetch the solvers and SeqSeg
     miros models list|download NAME  pre-trained SeqSeg models (aorta_ct, aorta_mr, coronary_ct)
     miros init DIR [--surface ...]   write a case.yaml (with detected caps)
     miros run DIR [--from S] [--until S] [--force]
@@ -37,21 +38,65 @@ def cmd_doctor(args):
         except Exception:
             rows.append((mod, 'MISSING', '', note))
     console.table(['package', 'status', 'version', 'note'], rows)
+    missing = {r[0] for r in rows if r[1] == 'MISSING'}
     exe = find_onedsolver()
     if exe:
         console.ok("OneDSolver: %s" % exe)
     else:
-        console.warn("OneDSolver not found (set MIROS_ONEDSOLVER or solvers.onedsolver, or put it on PATH); "
-                     "1D simulation will be unavailable")
+        console.warn("OneDSolver not found; 1D simulation is unavailable until it is. "
+                     "Get it with: miros install onedsolver (or set MIROS_ONEDSOLVER / solvers.onedsolver)")
     from .models import MODELS, models_dir, status as model_status
     st = model_status()
     console.info("SeqSeg models in %s:" % models_dir())
     for k, m in MODELS.items():
         console.info("  %-12s %-8s %s" % (k, 'ready' if st[k] else 'absent', m['description']))
-    if not any(st.values()):
-        console.info("  download one with: miros models download aorta_ct")
     display = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')) or not sys.platform.startswith('linux')
     console.info("display for interactive editors: %s" % ('yes' if display else 'no'))
+    todo = []
+    if 'pysvzerod' in missing:
+        todo.append("miros install pysvzerod      the 0D solver (tuning and sim_0d need it)")
+    if not exe:
+        todo.append("miros install onedsolver     the 1D solver, or set simulation.run_1d: false")
+    if 'seqseg' in missing:
+        todo.append("miros install seqseg         segmentation from images (SeqSeg, nnU-Net, torch)")
+    elif not any(st.values()):
+        todo.append("miros models download aorta_ct   the weights for segmenting")
+    if {'pyvistaqt', 'qtpy'} & missing:
+        todo.append('pip install "miros[gui]"     the window')
+    if todo:
+        console.section("to complete the install")
+        for t in todo:
+            console.info(t)
+        console.info("or everything at once: miros install all")
+    else:
+        console.ok("everything is in place; try: miros run examples/aorta")
+    return 0
+
+
+def cmd_install(args):
+    from .install import InstallError, install_all, install_onedsolver, install_pysvzerod, install_seqseg
+    from .models import cli_progress
+    gpu = True if args.gpu else (False if args.cpu else None)
+    models = () if args.no_models else ('aorta_ct',)
+    try:
+        if args.what == 'pysvzerod':
+            how = install_pysvzerod(log=console.info, progress=cli_progress)
+            console.ok("pysvzerod: %s" % {'present': 'already installed', 'wheel': 'installed from a prebuilt wheel',
+                                          'source': 'built from source'}[how])
+        elif args.what == 'onedsolver':
+            console.ok("OneDSolver: %s" % install_onedsolver(log=console.info, progress=cli_progress))
+        elif args.what == 'seqseg':
+            install_seqseg(gpu=gpu, models=models, log=console.info, progress=cli_progress)
+            console.ok("SeqSeg installed%s" % ('' if not models else ' with the %s weights' % ', '.join(models)))
+        else:
+            done = install_all(gpu=gpu, models=models, log=console.info, progress=cli_progress)
+            console.section("installed")
+            for k, v in done.items():
+                console.info("%-12s %s" % (k, v))
+    except InstallError as e:
+        console.error(str(e))
+        return 1
+    console.info("check with: miros doctor")
     return 0
 
 
@@ -215,6 +260,13 @@ def main(argv=None):
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     sub.add_parser('doctor', help='check solvers and dependencies').set_defaults(fn=cmd_doctor)
+
+    p = sub.add_parser('install', help='fetch what MIROS drives: pysvzerod (0D), onedsolver (1D), seqseg, or all')
+    p.add_argument('what', choices=['all', 'pysvzerod', 'onedsolver', 'seqseg'])
+    p.add_argument('--gpu', action='store_true', help='seqseg: torch with CUDA (default: when nvidia-smi is found)')
+    p.add_argument('--cpu', action='store_true', help='seqseg: torch for the CPU')
+    p.add_argument('--no-models', action='store_true', help='seqseg: do not download the aorta_ct weights')
+    p.set_defaults(fn=cmd_install)
 
     p = sub.add_parser('init', help='create a case directory with a case.yaml')
     p.add_argument('dir')
