@@ -23,12 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
-
-[project.urls]
-Homepage = "https://github.com/BryannGan/MIROS"
-Documentation = "https://github.com/BryannGan/MIROS/blob/main/docs/install.md"
-Issues = "https://github.com/BryannGan/MIROS/issues"
-"Prebuilt solvers" = "https://github.com/BryannGan/MIROS/releases/tag/solvers"
 dependencies = [
     "numpy",
     "scipy",
@@ -43,9 +37,8 @@ dependencies = [
     "rich",
     "ruamel.yaml",
 ]
-# The 0D solver (pysvzerod) is installed from git until wheels are published:
-#   pip install git+https://github.com/simvascular/svZeroDSolver.git
-# The 1D solver (svOneDSolver) is an executable; see `miros doctor`.
+# The 0D solver (pysvzerod) and the 1D solver (OneDSolver) are fetched by `miros install`:
+# prebuilt from this repository's `solvers` release, else built from SimVascular's sources.
 
 [project.optional-dependencies]
 gui = ["pyvistaqt", "PySide6"]       # `miros gui` (3D view + steps)
@@ -55,6 +48,12 @@ dev = ["pytest", "pyvistaqt", "PySide6"]
 
 [project.scripts]
 miros = "miros.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/BryannGan/MIROS"
+Documentation = "https://github.com/BryannGan/MIROS/blob/main/docs/install.md"
+Issues = "https://github.com/BryannGan/MIROS/issues"
+"Prebuilt solvers" = "https://github.com/BryannGan/MIROS/releases/tag/solvers"
 
 [tool.setuptools.packages.find]
 include = ["miros*"]
