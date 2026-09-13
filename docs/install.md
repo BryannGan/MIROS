@@ -72,6 +72,8 @@ needs a C++ compiler; CMake and Ninja are fetched by pip:
 | Windows | [Visual Studio Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/), workload "Desktop development with C++"; then open a new terminal |
 
 By hand, the source build is `pip install git+https://github.com/simvascular/svZeroDSolver.git`.
+On Windows use the prebuilt wheel: a source build there compiles but the extension cannot find
+its DLL at import, which is exactly what the wheel build fixes with `delvewheel`.
 
 ### `miros install onedsolver`, the 1D solver
 

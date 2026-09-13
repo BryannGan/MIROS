@@ -45,6 +45,43 @@ QT_QPA_PLATFORM=offscreen /home/bg2881/miniconda3/envs/MIROS/bin/python -m pytes
 
 `set -o pipefail` whenever you pipe a test command, or a failure reads as a pass.
 
+### Getting the solvers: `miros install` and the `solvers` release
+
+`miros/install.py`. svZeroDSolver publishes no wheels and svOneDSolver's only GitHub
+release (2021) has no files, so `.github/workflows/build-solvers.yml` compiles both from
+SimVascular's sources on the Linux (ubuntu-22.04, for an older glibc), macOS and Windows
+runners and attaches them to this repository's release tagged `solvers`
+(`--latest=false`, so it is not "the" release of MIROS): `OneDSolver-<os>-<arch>[.exe]`,
+`pysvzerod-2.0-cp31x-...whl` for Python 3.10 to 3.12, and svOneDSolver's licence. Run it
+from the Actions tab whenever upstream moves; it clobbers the assets. `miros install
+onedsolver` downloads the executable into `~/.miros/bin` (`MIROS_HOME` overrides
+`~/.miros`), which `solvers.find_onedsolver` searches before `PATH`; `miros install
+pysvzerod` picks the wheel by `cp3xy` and platform tag, else `pip install git+...`;
+`miros install seqseg` adds a CUDA torch when `nvidia-smi` is found (Linux and Windows;
+the default Windows torch is CPU-only) and the `aorta_ct` weights. `miros doctor` ends
+with the commands that complete the install. CI fetches both solvers this way, so the
+integration tests solve for real on all three OSes. Facts from building it:
+
+- **The bash shell on the Windows runner puts Git's `mingw64/bin` first on PATH.** The
+  first Windows wheel was compiled by gcc and could not load into CPython ("the specified
+  procedure could not be found"). `CC=cl`, `CXX=cl` and `ilammy/msvc-dev-cmd` fix it.
+  The OneDSolver build was never affected: CMake's default generator on Windows is
+  Visual Studio, and its C runtime is linked in (`CMAKE_MSVC_RUNTIME_LIBRARY`).
+- **A macOS wheel is tagged for the runner's macOS** (26) unless
+  `MACOSX_DEPLOYMENT_TARGET` says otherwise; it is 12.0. The wheels are `universal2`.
+- **Windows wheels need `delvewheel`** to carry their DLLs. A plain source build on
+  Windows (`pip install git+...`, what the fallback does) compiles but fails at import with
+  "DLL load failed", so on Windows only the wheel route works; `importable()` catches it
+  and the install reports failure rather than leaving a broken package.
+- **pytest 8.2 `importorskip` skips only on ModuleNotFoundError.** A broken pysvzerod is an
+  error in the integration tests, not a skip, which is what you want in CI.
+- **svZeroDSolver's Fortran probe** finds an incompatible gfortran on the Windows runner;
+  `FC=none` disables it (their own CI does the same).
+- The prebuilt Linux OneDSolver depends only on libc, libm, libstdc++ and libgcc.
+- **The name `miros` is taken on PyPI** (a statechart library, 4.x). The distribution
+  needs another name before `publish.yml` (trusted publishing on `v*` tags) can be used;
+  the import name and the `miros` command can stay.
+
 ### The other two operating systems
 
 This machine is Linux; Windows and macOS are covered by `.github/workflows/
@@ -52,7 +89,8 @@ ci.yml` on every push to main and every pull request: ubuntu, windows and
 macos runners on Python 3.10 and 3.12 (3.11 on ubuntu) install `.[dev]` and
 run the unit tests with the window offscreen, the integration tests, and the
 CLI from the example surface to the 0D model. Neither pysvzerod nor OneDSolver
-is installed there, so the tests that solve skip. `gh run list` and `gh run
+was installed there until `miros install` existed; now both are, and everything solves.
+`gh run list` and `gh run
 view --job ID --log` (or `gh api repos/BryannGan/MIROS/actions/jobs/ID/logs`
 when the former is empty) read the results from here. What the matrix taught:
 

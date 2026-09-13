@@ -7,6 +7,7 @@ models.
 |---|---|---|
 | `pysvzerod │ MISSING` | the 0D solver is not installed | `miros install pysvzerod` |
 | `pysvzerod did not build` | no prebuilt wheel fits this machine and the source build failed | install a C++ compiler ([Install](install.md), step 3) and run it again |
+| `DLL load failed while importing pysvzerod` (Windows) | a source build of pysvzerod; its extension cannot find a DLL | use a Python version with a prebuilt wheel (3.10 to 3.12) and `miros install pysvzerod` again |
 | `WARNING OneDSolver not found` | no 1D solver in `~/.miros/bin`, on `PATH` or in the usual places | `miros install onedsolver`, or `simulation.run_1d: false` |
 | `no prebuilt OneDSolver for …` | your OS or architecture has no prebuilt executable | SimVascular's installer or a source build, [Install](install.md) step 3 |
 | `cannot list the prebuilt solvers` | no network, or GitHub's API rate limit | try later; the by-hand routes in [Install](install.md) do not need it |
