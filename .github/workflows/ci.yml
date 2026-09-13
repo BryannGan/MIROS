@@ -6,11 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Everything that needs no solver, on the three operating systems and at both ends
-# of the supported Python range (3.10 to 3.12): the unit tests including the window (offscreen),
-# the geometry and ROM builder against the SimVascular reference, and the CLI from
-# a surface to the 0D model. pysvzerod and OneDSolver are not installed here, so
-# the tests that solve are skipped.
+# The three operating systems at both ends of the supported Python range (3.10 to
+# 3.12): `miros install` fetches the two solvers the way a user would, then the unit
+# tests run with the window offscreen, the integration tests solve the 0D and 1D
+# models against the SimVascular reference, and the CLI goes from the example
+# surface to the 0D results.
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -40,6 +40,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      - name: The solvers, the way a user gets them
+        run: |
+          python -m miros install pysvzerod
+          python -m miros install onedsolver
       - name: Doctor
         run: python -m miros doctor
       # VTK draws the 3D view in a GL context of its own, so on Linux the tests get a display
@@ -50,13 +54,13 @@ jobs:
       - name: Unit tests, window included
         if: runner.os != 'Linux'
         run: python -m pytest tests/unit -q
-      - name: Integration tests (the solvers are absent, so those skip)
-        run: python -m pytest tests/integration -q
-      - name: The CLI, from a surface to the 0D model
+      - name: Integration tests, 0D and 1D solves included
+        run: python -m pytest tests/integration -q -rs
+      - name: The CLI, from a surface to the 0D results
         shell: bash
         run: |
           python -m miros init "${{ runner.temp }}/aorta" --surface examples/aorta/clipped_seqseg_results.vtp --inflow examples/aorta/inflow.flow
-          python -m miros run "${{ runner.temp }}/aorta" --until rom_model
+          python -m miros run "${{ runner.temp }}/aorta" --until extract_0d
           python -m miros status "${{ runner.temp }}/aorta"
 
   package:

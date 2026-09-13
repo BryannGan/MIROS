@@ -67,11 +67,17 @@ jobs:
       # svZeroDSolver's own CI: Eigen's optional Fortran probe otherwise finds an
       # incompatible gfortran on the Windows runner and fails to link
       FC: ${{ startsWith(matrix.os, 'windows') && 'none' || '' }}
+      # the bash shell puts Git's mingw64/bin first on PATH, and a MinGW-built extension cannot
+      # load into an MSVC-built CPython: name the compiler
+      CC: ${{ startsWith(matrix.os, 'windows') && 'cl' || '' }}
+      CXX: ${{ startsWith(matrix.os, 'windows') && 'cl' || '' }}
       MACOSX_DEPLOYMENT_TARGET: "12.0"     # so the macOS wheel installs on macOS 12 and later, not only the runner's release
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - uses: ilammy/msvc-dev-cmd@v1         # cl, link and the Windows SDK on PATH for Ninja
+        if: runner.os == 'Windows'
       - name: Build the wheel
         shell: bash
         run: |
