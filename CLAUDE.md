@@ -32,6 +32,7 @@ editable (`pip install -e .`). OneDSolver at `/usr/local/sv/oneDSolver/2025-07-0
 | `miros/io/` | the only readers/writers for `rcrt.dat`, `.flow`, 0D JSON, OneDSolver runs; `process.py` runs external programs streamed, logged, stoppable (`case.cancel`) |
 | `miros/ui/` | console output (rich, plain fallback), matplotlib waveform editor |
 | `examples/aorta/` | runnable example (`case.yaml`, surface, inflow) + `reference/` from SimVascular for the validation tests |
+| `docs/` | the user documentation the README links to: install per OS, the window, commands, case file (its template block is checked against `write_template` by a test), segmentation, tuning, troubleshooting, development |
 | `tests/unit`, `tests/integration` | `pytest`; integration tests are `slow`, skip without solvers |
 
 Case directory: `case.yaml`, `work/` (intermediate files), `results/0D`, `results/1D`, `.miros/`.

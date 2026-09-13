@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use MIROS, please cite it, together with SimVascular, svZeroDSolver, svOneDSolver and SeqSeg, on which it builds."
+title: "MIROS: Medical Image to Patient-Specific Reduced-Order Hemodynamic Model Simulation in Minutes"
+type: software
+authors:
+  - family-names: Gan
+    given-names: Bryan
+repository-code: "https://github.com/BryannGan/MIROS"
+license: MIT
+version: 0.2.0.dev0
+references:
+  - type: article
+    title: "SimVascular: An Open Source Pipeline for Cardiovascular Simulation"
+    authors:
+      - family-names: Updegrove
+        given-names: Adam
+    journal: Annals of Biomedical Engineering
+    year: 2017
+  - type: article
+    title: "Automated generation of 0D and 1D reduced-order models of patient-specific blood flow"
+    authors:
+      - family-names: Pfaller
+        given-names: Martin R.
+    journal: International Journal for Numerical Methods in Biomedical Engineering
+    year: 2022
+  - type: article
+    title: "SeqSeg: Learning Local Segments for Automatic Vascular Model Construction"
+    authors:
+      - family-names: Sveinsson Cepero
+        given-names: Numi
+      - family-names: Shadden
+        given-names: Shawn C.
+    journal: Annals of Biomedical Engineering
+    year: 2024
+    doi: 10.1007/s10439-024-03611-z
