@@ -7,10 +7,11 @@ by a manifest that re-runs only what changed.
 ## Set up and verify
 
 1. Python 3.10 to 3.12, then `pip install -e ".[dev]"` (window plus pytest) or `".[all]"`.
-2. The solvers are external: `pip install git+https://github.com/simvascular/svZeroDSolver.git`
-   (needs a C++ compiler) and an `OneDSolver` executable found via `PATH`, `MIROS_ONEDSOLVER` or
-   `solvers.onedsolver`. [docs/install.md](docs/install.md) has the per-OS commands.
-3. `miros doctor` reports what is present. `miros run examples/aorta` proves the whole pipeline.
+2. `miros install all` fetches the 0D solver (pysvzerod), the 1D solver (OneDSolver, into
+   `~/.miros/bin`) and SeqSeg with its weights; each is also a command of its own.
+   [docs/install.md](docs/install.md) has every step by hand, per OS.
+3. `miros doctor` reports what is present and what command completes the install.
+   `miros run examples/aorta` proves the whole pipeline.
 
 ## Test
 

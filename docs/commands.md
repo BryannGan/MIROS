@@ -4,7 +4,8 @@
 
 | Command | Does |
 |---|---|
-| `miros doctor` | checks the Python packages, finds `OneDSolver`, lists downloaded models, says whether a display is available |
+| `miros doctor` | checks the Python packages, finds `OneDSolver`, lists downloaded models, says whether a display is available, and ends with the `miros install` commands that would complete the install |
+| `miros install all` / `pysvzerod` / `onedsolver` / `seqseg [--gpu\|--cpu] [--no-models]` | fetches the 0D solver, the 1D solver and SeqSeg with its weights; see [Install](install.md) |
 | `miros models list` / `miros models download NAME` | the pretrained SeqSeg models: `aorta_ct`, `aorta_mr`, `coronary_ct` |
 | `miros init DIR --surface S [--inflow F] [--inflow-source gui] [--units mm] [--inlet NAME]` | creates `DIR/case.yaml` with the caps it detects on the surface |
 | `miros run DIR [--from STAGE] [--until STAGE] [--force]` | runs the stale stages; `--from` re-runs from a stage onward, `--force` all of them; Ctrl-C stops and the next run resumes |

@@ -35,7 +35,11 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_UNIT_TEST=OFF -DENABLE_INTERFACE_LIBRARY=OFF
+          extra=""
+          if [ "$RUNNER_OS" = "Windows" ]; then     # link the C runtime in, so the .exe needs no redistributable
+            extra="-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+          fi
+          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_UNIT_TEST=OFF -DENABLE_INTERFACE_LIBRARY=OFF $extra
           cmake --build build --config Release --parallel 3
           mkdir -p out
           exe=$(find build/bin -type f \( -name OneDSolver -o -name OneDSolver.exe \) | head -1)
@@ -63,6 +67,7 @@ jobs:
       # svZeroDSolver's own CI: Eigen's optional Fortran probe otherwise finds an
       # incompatible gfortran on the Windows runner and fails to link
       FC: ${{ startsWith(matrix.os, 'windows') && 'none' || '' }}
+      MACOSX_DEPLOYMENT_TARGET: "12.0"     # so the macOS wheel installs on macOS 12 and later, not only the runner's release
     steps:
       - uses: actions/setup-python@v5
         with:
@@ -71,8 +76,20 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip wheel
-          python -m pip wheel --no-deps -w dist "$ZEROD"
-          ls -la dist
+          python -m pip wheel --no-deps -w built "$ZEROD"
+          ls -la built
+          python -m zipfile -l built/*.whl
+      - name: Bundle the DLLs the extension needs (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m pip install delvewheel
+          python -m delvewheel show built/*.whl
+          python -m delvewheel repair -w dist built/*.whl
+      - name: Keep the wheel as built (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: mkdir -p dist && cp built/*.whl dist/
       - name: Install and import it
         shell: bash
         run: |

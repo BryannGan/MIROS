@@ -22,12 +22,19 @@ def test_case_file_page_carries_the_current_template():
     assert block.group(1) == template_text(), 'docs/case-file.md is behind write_template(); regenerate the block'
 
 
+BLOB = 'https://github.com/BryannGan/MIROS/blob/main/'     # the README links this way so PyPI renders them
+
+
 def test_local_links_in_the_pages_resolve():
     broken = []
     for page in PAGES:
         for target in re.findall(r'\]\(([^)#]+)(?:#[^)]*)?\)', page.read_text(encoding='utf-8')):
-            if re.match(r'[a-z]+:', target):                     # http, mailto
+            if target.startswith(BLOB):
+                path = ROOT / target[len(BLOB):]
+            elif re.match(r'[a-z]+:', target):                   # http, mailto
                 continue
-            if not (page.parent / target).exists():
+            else:
+                path = page.parent / target
+            if not path.exists():
                 broken.append('%s -> %s' % (page.relative_to(ROOT), target))
     assert not broken, broken

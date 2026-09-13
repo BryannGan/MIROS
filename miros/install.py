@@ -67,7 +67,7 @@ def wheel_matches(name: str, key: str, py: Sequence[int] = sys.version_info[:2])
     if os_name == 'windows':
         return 'win_amd64' in name
     if os_name == 'macos':
-        return 'macosx' in name and arch in name
+        return 'macosx' in name and (arch in name or 'universal2' in name)
     return 'linux' in name and 'x86_64' in name and 'macosx' not in name
 
 

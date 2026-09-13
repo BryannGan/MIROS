@@ -58,3 +58,18 @@ jobs:
           python -m miros init "${{ runner.temp }}/aorta" --surface examples/aorta/clipped_seqseg_results.vtp --inflow examples/aorta/inflow.flow
           python -m miros run "${{ runner.temp }}/aorta" --until rom_model
           python -m miros status "${{ runner.temp }}/aorta"
+
+  package:
+    name: the package builds and installs on its own
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+          python -m venv /tmp/fresh && /tmp/fresh/bin/pip install -q dist/*.whl
+          /tmp/fresh/bin/miros --version && /tmp/fresh/bin/miros doctor

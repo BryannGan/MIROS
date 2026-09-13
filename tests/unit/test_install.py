@@ -25,6 +25,8 @@ def test_wheel_matching_by_interpreter_and_platform():
     assert not I.wheel_matches('pysvzerod-2.0-cp310-cp310-linux_x86_64.whl', 'linux-x86_64', (3, 11))
     assert I.wheel_matches('pysvzerod-2.0-cp312-cp312-macosx_11_0_arm64.whl', 'macos-arm64', (3, 12))
     assert not I.wheel_matches('pysvzerod-2.0-cp312-cp312-macosx_11_0_arm64.whl', 'macos-x86_64', (3, 12))
+    assert I.wheel_matches('pysvzerod-2.0-cp312-cp312-macosx_12_0_universal2.whl', 'macos-x86_64', (3, 12))
+    assert I.wheel_matches('pysvzerod-2.0-cp312-cp312-macosx_12_0_universal2.whl', 'macos-arm64', (3, 12))
     assert I.wheel_matches('pysvzerod-2.0-cp310-cp310-win_amd64.whl', 'windows-x86_64', (3, 10))
     assert not I.wheel_matches('OneDSolver-linux-x86_64', 'linux-x86_64', (3, 11))
 

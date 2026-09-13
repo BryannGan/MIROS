@@ -26,24 +26,24 @@ image ──segment──▶ surface ──preprocess──▶ caps ──rom_mo
 
 ## Install
 
-Python 3.10 to 3.12 on Linux, macOS or Windows. Three commands give you MIROS, the window and
-segmentation; the two solvers, from SimVascular, are one step each.
+Python 3.10 to 3.12 on Linux, macOS or Windows.
 
 ```bash
 git clone https://github.com/BryannGan/MIROS.git && cd MIROS
 python -m venv .venv && source .venv/bin/activate      # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -e ".[all]"                                 # MIROS, the window, SeqSeg (pulls torch, about 2 GB)
+miros install all                                       # the two SimVascular solvers and the SeqSeg weights
 miros doctor                                            # what is there, what is missing, and how to get it
 ```
 
-| Piece | Used for | Get it |
+| `miros install …` | Gets | From |
 |---|---|---|
-| **pysvzerod** (svZeroDSolver) | the 0D simulation and the tuning | `pip install git+https://github.com/simvascular/svZeroDSolver.git` — it compiles, so a C++ compiler must be present; see the guide |
-| **OneDSolver** (svOneDSolver) | the 1D simulation, optional | an installer from SimTK or a CMake build; see the guide |
-| **SeqSeg weights** | segmenting an image, optional | `miros models download aorta_ct` |
+| `pysvzerod` | the 0D solver ([svZeroDSolver](https://github.com/simvascular/svZeroDSolver)), for the tuning and `sim_0d` | a prebuilt wheel in this repository's [`solvers` release](https://github.com/BryannGan/MIROS/releases/tag/solvers), else a source build |
+| `onedsolver` | the 1D solver ([svOneDSolver](https://github.com/SimVascular/svOneDSolver)), for `sim_1d`, optional | a prebuilt executable in the same release, into `~/.miros/bin` |
+| `seqseg` | [SeqSeg](https://github.com/numisveinsson/SeqSeg) with a torch for your GPU, and the `aorta_ct` weights | PyPI and Zenodo |
 
-**[The install guide](docs/install.md)** has the exact commands for each operating system, a GPU
-torch for SeqSeg, and what `miros doctor` prints when everything is in place.
+**[The install guide](https://github.com/BryannGan/MIROS/blob/main/docs/install.md)** has each step by hand as well, per operating system,
+and what `miros doctor` prints when everything is in place.
 
 ## Try it
 
@@ -80,21 +80,21 @@ miros run ~/cases/patient01
 
 | Page | What is in it |
 |---|---|
-| [Install](docs/install.md) | every dependency, per operating system, and how to check them |
-| [The window](docs/window.md) | the seven steps of `miros gui` |
-| [Commands](docs/commands.md) | `miros doctor / init / run / status / models / gui / setup / show / inflow`, the stages, the library |
-| [The case file](docs/case-file.md) | every option in `case.yaml`, with the full template |
-| [From an image](docs/segmentation.md) | SeqSeg, seeds, the pretrained models, how the vessel ends are opened |
-| [Boundary-condition tuning](docs/tuning.md) | how the RCR values are found, and which targets are reachable |
-| [Troubleshooting](docs/troubleshooting.md) | the messages you may see and what they mean |
-| [Development](docs/development.md) | tests, continuous integration, validation against SimVascular, layout |
+| [Install](https://github.com/BryannGan/MIROS/blob/main/docs/install.md) | every dependency, per operating system, and how to check them |
+| [The window](https://github.com/BryannGan/MIROS/blob/main/docs/window.md) | the seven steps of `miros gui` |
+| [Commands](https://github.com/BryannGan/MIROS/blob/main/docs/commands.md) | `miros doctor / init / run / status / models / gui / setup / show / inflow`, the stages, the library |
+| [The case file](https://github.com/BryannGan/MIROS/blob/main/docs/case-file.md) | every option in `case.yaml`, with the full template |
+| [From an image](https://github.com/BryannGan/MIROS/blob/main/docs/segmentation.md) | SeqSeg, seeds, the pretrained models, how the vessel ends are opened |
+| [Boundary-condition tuning](https://github.com/BryannGan/MIROS/blob/main/docs/tuning.md) | how the RCR values are found, and which targets are reachable |
+| [Troubleshooting](https://github.com/BryannGan/MIROS/blob/main/docs/troubleshooting.md) | the messages you may see and what they mean |
+| [Development](https://github.com/BryannGan/MIROS/blob/main/docs/development.md) | tests, continuous integration, validation against SimVascular, layout |
 
-Working on the code with an AI agent? [AGENTS.md](AGENTS.md) is written for it.
+Working on the code with an AI agent? [AGENTS.md](https://github.com/BryannGan/MIROS/blob/main/AGENTS.md) is written for it.
 
 ## Citation
 
 MIROS builds on SimVascular, svZeroDSolver, svOneDSolver and SeqSeg. Please cite them with it
-(see [CITATION.cff](CITATION.cff)):
+(see [CITATION.cff](https://github.com/BryannGan/MIROS/blob/main/CITATION.cff)):
 
 - Updegrove A. et al., *SimVascular: An Open Source Pipeline for Cardiovascular Simulation*, Ann Biomed Eng 2017.
 - Pfaller M.R. et al., *Automated generation of 0D and 1D reduced-order models of patient-specific blood flow*, Int J Numer Meth Biomed Eng 2022.
@@ -102,5 +102,5 @@ MIROS builds on SimVascular, svZeroDSolver, svOneDSolver and SeqSeg. Please cite
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). The vendored SimVascular modules under `miros/rom` and
+MIT (see [LICENSE](https://github.com/BryannGan/MIROS/blob/main/LICENSE)). The vendored SimVascular modules under `miros/rom` and
 `miros/rom_extract` keep their own permissive license, reproduced in every file.

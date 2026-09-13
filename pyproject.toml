@@ -10,6 +10,25 @@ readme = "README.md"
 requires-python = ">=3.10"           # 3.9 is end of life; its last vtk/pyvista wheels crash under Qt
 license = { text = "MIT" }
 authors = [{ name = "Bryan Gan" }]
+keywords = ["hemodynamics", "cardiovascular", "reduced-order model", "0D", "1D", "simvascular",
+            "svzerodsolver", "svonedsolver", "seqseg", "segmentation", "vtk", "medical imaging"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+
+[project.urls]
+Homepage = "https://github.com/BryannGan/MIROS"
+Documentation = "https://github.com/BryannGan/MIROS/blob/main/docs/install.md"
+Issues = "https://github.com/BryannGan/MIROS/issues"
+"Prebuilt solvers" = "https://github.com/BryannGan/MIROS/releases/tag/solvers"
 dependencies = [
     "numpy",
     "scipy",

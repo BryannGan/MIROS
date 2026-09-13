@@ -5,8 +5,11 @@ models.
 
 | You see | It means | Do |
 |---|---|---|
-| `pysvzerod │ MISSING` | the 0D solver was not built | [Install](install.md) step 3: a C++ compiler, then `pip install git+https://github.com/simvascular/svZeroDSolver.git` |
-| `WARNING OneDSolver not found` | no 1D solver on `PATH` or in the usual places | [Install](install.md) step 4, or `simulation.run_1d: false` |
+| `pysvzerod │ MISSING` | the 0D solver is not installed | `miros install pysvzerod` |
+| `pysvzerod did not build` | no prebuilt wheel fits this machine and the source build failed | install a C++ compiler ([Install](install.md), step 3) and run it again |
+| `WARNING OneDSolver not found` | no 1D solver in `~/.miros/bin`, on `PATH` or in the usual places | `miros install onedsolver`, or `simulation.run_1d: false` |
+| `no prebuilt OneDSolver for …` | your OS or architecture has no prebuilt executable | SimVascular's installer or a source build, [Install](install.md) step 3 |
+| `cannot list the prebuilt solvers` | no network, or GitHub's API rate limit | try later; the by-hand routes in [Install](install.md) do not need it |
 | `the MIROS window needs the GUI extra` | `pyvistaqt` or `PySide6` is absent | `pip install -e ".[gui]"` |
 | `model 'aorta_ct' is not downloaded yet` | no weights | `miros models download aorta_ct` |
 | `segmentation.seeds is empty` | a case created from an image has no seeds yet | place them on the Segment step, or add `{point, direction, radius}` entries |
